@@ -8,17 +8,18 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use egui::{
-    CentralPanel, Color32, ColorImage, Context, Event, Frame, Image, ProgressBar, Rect,
-    RichText, TextureHandle, TextureOptions, ViewportBuilder, ViewportId, ViewportCommand, vec2,
-};
 use egui::load::SizedTexture;
+use egui::{
+    CentralPanel, Color32, ColorImage, Context, Event, Frame, Image, ProgressBar, Rect, RichText,
+    TextureHandle, TextureOptions, ViewportBuilder, ViewportCommand, ViewportId, vec2,
+};
 
 use crate::input::{self, Action};
 use crate::pdf::{Half, SlideIndex};
 use crate::render::{DocumentInfo, PageKey, RenderHandle, RenderKey};
 use crate::state::DeckState;
 use crate::timer::{self, Timer};
+use crate::ui::highlight::{self, Strokes};
 use crate::ui::overview::grid_geometry;
 
 /// Pixels per point used when rendering pages.
@@ -48,6 +49,13 @@ pub struct RumpressApp {
     swap_halves: bool,
     /// Whether the overview grid is shown in the presenter window.
     overview_visible: bool,
+    /// Whether dragging on the presenter's slide draws highlight strokes.
+    highlight_mode: bool,
+    /// Freehand highlight strokes for the current page, in normalized
+    /// 0..1 slide coordinates. Cleared when the page changes.
+    strokes: Strokes,
+    /// Page shown at the previous frame, to detect page changes.
+    last_page: u16,
     /// Key actions collected from both viewports, applied once per frame.
     pending_actions: RefCell<Vec<Action>>,
     /// Set when either window is closed by the window manager.
@@ -72,6 +80,9 @@ impl RumpressApp {
             textures: HashMap::new(),
             swap_halves,
             overview_visible: false,
+            highlight_mode: false,
+            strokes: Strokes::default(),
+            last_page: 0,
             pending_actions: RefCell::new(Vec::new()),
             close_requested: Cell::new(false),
         }
@@ -79,12 +90,20 @@ impl RumpressApp {
 
     /// Which half of the page carries the slide.
     fn slide_half(&self) -> Half {
-        if self.swap_halves { Half::Right } else { Half::Left }
+        if self.swap_halves {
+            Half::Right
+        } else {
+            Half::Left
+        }
     }
 
     /// Which half of the page carries the notes.
     fn notes_half(&self) -> Half {
-        if self.swap_halves { Half::Left } else { Half::Right }
+        if self.swap_halves {
+            Half::Left
+        } else {
+            Half::Right
+        }
     }
 
     /// The texture for `key` rendered at `scale`, if it has arrived.
@@ -101,7 +120,8 @@ impl RumpressApp {
             // stale textures and re-derive the slide layout.
             self.textures.clear();
             self.slides = SlideIndex::from_labels(&info.labels);
-            self.state.apply_slides(SlideIndex::from_labels(&info.labels));
+            self.state
+                .apply_slides(SlideIndex::from_labels(&info.labels));
         }
         while let Some((rkey, bmp)) = self.render.poll() {
             let image = ColorImage::from_rgba_unmultiplied(
@@ -111,7 +131,10 @@ impl RumpressApp {
             if let Some(tex) = self.textures.get_mut(&rkey) {
                 tex.set(image, TextureOptions::default());
             } else {
-                let name = format!("page-{}-{:?}-{}", rkey.page.page, rkey.page.half, rkey.scale);
+                let name = format!(
+                    "page-{}-{:?}-{}",
+                    rkey.page.page, rkey.page.half, rkey.scale
+                );
                 let tex = ctx.load_texture(name, image, TextureOptions::default());
                 self.textures.insert(rkey, tex);
             }
@@ -121,12 +144,36 @@ impl RumpressApp {
         let slide_half = self.slide_half();
         let notes_half = self.notes_half();
         let page = self.state.current_page;
-        self.render.request(PageKey { page, half: slide_half }, scale);
-        self.render.request(PageKey { page: page.saturating_add(1), half: slide_half }, scale);
-        self.render.request(PageKey { page, half: notes_half }, scale);
+        self.render.request(
+            PageKey {
+                page,
+                half: slide_half,
+            },
+            scale,
+        );
+        self.render.request(
+            PageKey {
+                page: page.saturating_add(1),
+                half: slide_half,
+            },
+            scale,
+        );
+        self.render.request(
+            PageKey {
+                page,
+                half: notes_half,
+            },
+            scale,
+        );
         if let Some(next) = self.slides.next_slide(self.state.current_slide) {
             let first = self.slides.first_page(next);
-            self.render.request(PageKey { page: first, half: slide_half }, scale);
+            self.render.request(
+                PageKey {
+                    page: first,
+                    half: slide_half,
+                },
+                scale,
+            );
         }
 
         // Overview thumbnails: first page of every slide, at low scale. The
@@ -134,8 +181,13 @@ impl RumpressApp {
         if self.overview_visible {
             for slide in 0..self.slides.slide_count() {
                 let first = self.slides.first_page(slide);
-                self.render
-                    .request(PageKey { page: first, half: slide_half }, OVERVIEW_SCALE);
+                self.render.request(
+                    PageKey {
+                        page: first,
+                        half: slide_half,
+                    },
+                    OVERVIEW_SCALE,
+                );
             }
         }
     }
@@ -148,6 +200,8 @@ impl RumpressApp {
             match action {
                 // Overview visibility lives in the app layer, not DeckState.
                 Action::ToggleOverview => self.overview_visible = !self.overview_visible,
+                // Highlight mode likewise lives in the app layer.
+                Action::ToggleHighlight => self.highlight_mode = !self.highlight_mode,
                 _ => quit |= input::apply(&mut self.state, action, &mut self.timer),
             }
         }
@@ -177,8 +231,13 @@ impl RumpressApp {
                 if self.state.blanked {
                     return; // black background is already in place
                 }
-                let key = PageKey { page: self.state.current_page, half: self.slide_half() };
-                let Some(tex) = self.texture_at(key, RENDER_SCALE) else { return };
+                let key = PageKey {
+                    page: self.state.current_page,
+                    half: self.slide_half(),
+                };
+                let Some(tex) = self.texture_at(key, RENDER_SCALE) else {
+                    return;
+                };
                 let tex_size = tex.size_vec2();
                 if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
                     return;
@@ -189,6 +248,9 @@ impl RumpressApp {
                 let size = tex_size * scale;
                 let rect = Rect::from_center_size(ui.max_rect().center(), size);
                 Image::from_texture(SizedTexture::new(tex.id(), tex_size)).paint_at(ui, rect);
+                // Highlight strokes over the slide, mapped from normalized
+                // coordinates into the on-screen slide rectangle.
+                highlight::draw(ui.painter(), rect, &self.strokes);
             });
     }
 
@@ -197,12 +259,14 @@ impl RumpressApp {
     fn draw_presenter(&mut self, ctx: &Context) {
         CentralPanel::default().show(ctx, |ui| {
             let row = ui.available_height() / 2.0;
-            let cur = PageKey { page: self.state.current_page, half: self.slide_half() };
             let next = PageKey {
                 page: self.state.current_page.saturating_add(1),
                 half: self.slide_half(),
             };
-            let notes = PageKey { page: self.state.current_page, half: self.notes_half() };
+            let notes = PageKey {
+                page: self.state.current_page,
+                half: self.notes_half(),
+            };
             ui.horizontal(|ui| {
                 ui.set_height(row);
                 let half_w = ui.available_width() / 2.0;
@@ -212,7 +276,7 @@ impl RumpressApp {
                         self.state.current_slide + 1,
                         self.slides.slide_count()
                     ));
-                    show_fitted(ui, self.texture_at(cur, RENDER_SCALE));
+                    self.draw_current_slide(ui);
                 });
                 ui.allocate_ui(vec2(half_w, row), |ui| {
                     ui.label("Next:");
@@ -223,7 +287,12 @@ impl RumpressApp {
                 ui.set_height(row);
                 let half_w = ui.available_width() / 2.0;
                 ui.allocate_ui(vec2(half_w, row), |ui| {
-                    draw_timer_bar(ui, &self.timer, self.state.current_slide, self.slides.slide_count());
+                    draw_timer_bar(
+                        ui,
+                        &self.timer,
+                        self.state.current_slide,
+                        self.slides.slide_count(),
+                    );
                 });
                 ui.allocate_ui(vec2(half_w, row), |ui| {
                     ui.label("Notes:");
@@ -246,7 +315,13 @@ impl RumpressApp {
         }
         // Slide aspect from the first page's texture, falling back to 16:9.
         let aspect = self
-            .texture_at(PageKey { page: 0, half: self.slide_half() }, OVERVIEW_SCALE)
+            .texture_at(
+                PageKey {
+                    page: 0,
+                    half: self.slide_half(),
+                },
+                OVERVIEW_SCALE,
+            )
             .map(|tex| {
                 let size = tex.size_vec2();
                 (size.x / size.y.max(1.0)).max(f32::EPSILON)
@@ -258,7 +333,10 @@ impl RumpressApp {
         let slide_half = self.slide_half();
         for (slide, rect) in rects.iter().enumerate() {
             let first = self.slides.first_page(slide);
-            let key = PageKey { page: first, half: slide_half };
+            let key = PageKey {
+                page: first,
+                half: slide_half,
+            };
             let response = ui.allocate_rect(*rect, egui::Sense::click());
             if let Some(tex) = self.texture_at(key, OVERVIEW_SCALE) {
                 let tex_size = tex.size_vec2();
@@ -290,6 +368,44 @@ impl RumpressApp {
         }
     }
 
+    /// The presenter's current-slide widget: the slide image fitted into the
+    /// available space, with highlight strokes drawn over it. In highlight
+    /// mode, dragging on the slide draws new strokes in normalized slide
+    /// coordinates.
+    fn draw_current_slide(&mut self, ui: &mut egui::Ui) {
+        let key = PageKey {
+            page: self.state.current_page,
+            half: self.slide_half(),
+        };
+        let Some(tex) = self.texture_at(key, RENDER_SCALE) else {
+            return;
+        };
+        let tex_size = tex.size_vec2();
+        if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
+            return;
+        }
+        let avail = ui.available_size();
+        let scale = (avail.x / tex_size.x).min(avail.y / tex_size.y);
+        let size = tex_size * scale;
+        let rect = Rect::from_min_size(ui.cursor().min, size);
+        Image::from_texture(SizedTexture::new(tex.id(), tex_size)).paint_at(ui, rect);
+        highlight::draw(ui.painter(), rect, &self.strokes);
+
+        if !self.highlight_mode {
+            return;
+        }
+        let response = ui.allocate_rect(rect, egui::Sense::drag());
+        if let Some(pos) = response.interact_pointer_pos() {
+            let norm = egui::pos2(
+                ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0),
+                ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0),
+            );
+            self.strokes.push_point(norm, response.dragged());
+        } else {
+            self.strokes.push_point(egui::pos2(0.0, 0.0), false); // pen up
+        }
+    }
+
     /// Reads key events from `ctx` (whichever viewport is being drawn) into
     /// the pending queue. Auto-repeat events are dropped: every action is a
     /// step or a toggle, so holding a key should not machine-gun.
@@ -298,9 +414,13 @@ impl RumpressApp {
             i.events
                 .iter()
                 .filter_map(|event| match event {
-                    Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
-                        Some(input::map_key(*key, *modifiers))
-                    }
+                    Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } => Some(input::map_key(*key, *modifiers)),
                     _ => None,
                 })
                 .collect()
@@ -321,6 +441,13 @@ impl eframe::App for RumpressApp {
 
         self.poll_render(ctx);
         self.show_presentation(ctx);
+
+        // Highlight strokes belong to one page: clear them when the page
+        // changes (including jumps via the overview grid).
+        if self.state.current_page != self.last_page {
+            self.strokes.clear();
+            self.last_page = self.state.current_page;
+        }
 
         if self.handle_actions() {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -354,11 +481,12 @@ fn draw_timer_bar(ui: &mut egui::Ui, timer: &Timer, slide: usize, slide_count: u
         }
     });
     if let Some(target) = timer.target()
-        && target.as_secs_f32() > 0.0 {
-            ui.label(format!("Target: {}", format_duration(target)));
-            let frac = (elapsed.as_secs_f32() / target.as_secs_f32()).clamp(0.0, 1.0);
-            ui.add(ProgressBar::new(frac).show_percentage());
-        }
+        && target.as_secs_f32() > 0.0
+    {
+        ui.label(format!("Target: {}", format_duration(target)));
+        let frac = (elapsed.as_secs_f32() / target.as_secs_f32()).clamp(0.0, 1.0);
+        ui.add(ProgressBar::new(frac).show_percentage());
+    }
 }
 
 /// The current wall-clock time as `HH:MM`, from `SystemTime`.
@@ -378,12 +506,7 @@ fn wall_clock_string() -> String {
 
 /// Pace as colored text: green OnTrack, yellow within ±2 min, red otherwise,
 /// with signed minutes. `None` when no target is set.
-fn pace_text(
-    timer: &Timer,
-    now: Instant,
-    slide: usize,
-    slide_count: usize,
-) -> Option<RichText> {
+fn pace_text(timer: &Timer, now: Instant, slide: usize, slide_count: usize) -> Option<RichText> {
     timer.target()?;
     let (color, text) = match timer::pace(timer, now, slide, slide_count) {
         timer::Pace::Ahead(d) if d >= Duration::from_secs(120) => {
