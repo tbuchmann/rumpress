@@ -16,6 +16,7 @@ use egui::{
 };
 
 use crate::input::{self, Action};
+use crate::layout::{PageLayout, detect};
 use crate::pdf::{Half, SlideIndex};
 use crate::reload::{self, ReloadWatcher};
 use crate::render::{DocumentInfo, PageKey, RenderHandle, RenderKey};
@@ -48,7 +49,12 @@ pub struct RumpressApp {
     /// bitmaps arrive. The scale is part of the key so overview thumbnails
     /// never replace the full-resolution main-view textures.
     textures: HashMap<RenderKey, TextureHandle>,
+    /// The `--swap-halves` flag, kept so the layout can be re-derived when
+    /// the document reloads and fresh `DocumentInfo` arrives.
     swap_halves: bool,
+    /// How a page maps onto the two viewports, derived from the page size
+    /// when `DocumentInfo` arrives (recomputed on reload).
+    layout: PageLayout,
     /// Whether the overview grid is shown in the presenter window.
     overview_visible: bool,
     /// Whether dragging on the presenter's slide draws highlight strokes.
@@ -83,6 +89,7 @@ impl RumpressApp {
         pdf_path: PathBuf,
     ) -> RumpressApp {
         let slides = SlideIndex::from_labels(&info.labels);
+        let layout = detect(info.page_size, swap_halves);
         let reload_watcher = match reload::watch(&pdf_path) {
             Ok(w) => Some(w),
             Err(e) => {
@@ -97,6 +104,7 @@ impl RumpressApp {
             timer,
             textures: HashMap::new(),
             swap_halves,
+            layout,
             overview_visible: false,
             highlight_mode: false,
             strokes: Strokes::default(),
@@ -108,21 +116,22 @@ impl RumpressApp {
         }
     }
 
-    /// Which half of the page carries the slide.
+    /// Which half of the page the beamer shows. The whole page when the
+    /// layout is [`PageLayout::Full`].
     fn slide_half(&self) -> Half {
-        if self.swap_halves {
-            Half::Right
-        } else {
-            Half::Left
+        match self.layout {
+            PageLayout::Split { slide, .. } => slide,
+            PageLayout::Full => Half::Full,
         }
     }
 
-    /// Which half of the page carries the notes.
+    /// Which half of the page the presenter's notes widget shows. The whole
+    /// page when the layout is [`PageLayout::Full`] (the widget renders
+    /// nothing in that case).
     fn notes_half(&self) -> Half {
-        if self.swap_halves {
-            Half::Left
-        } else {
-            Half::Right
+        match self.layout {
+            PageLayout::Split { notes, .. } => notes,
+            PageLayout::Full => Half::Full,
         }
     }
 
@@ -139,6 +148,7 @@ impl RumpressApp {
             // A fresh DocumentInfo means the document was (re)opened: drop
             // stale textures and re-derive the slide layout.
             self.textures.clear();
+            self.layout = detect(info.page_size, self.swap_halves);
             self.slides = SlideIndex::from_labels(&info.labels);
             self.state
                 .apply_slides(SlideIndex::from_labels(&info.labels));
@@ -291,6 +301,12 @@ impl RumpressApp {
     /// notes, timer bar, and (toggled with `g`) the overview grid.
     fn draw_presenter(&mut self, ctx: &Context) {
         CentralPanel::default().show(ctx, |ui| {
+            if self.layout == PageLayout::Full {
+                ui.label(
+                    RichText::new("PDF is not a 2×1 notes deck — showing full page")
+                        .color(Color32::YELLOW),
+                );
+            }
             let row = ui.available_height() / 2.0;
             let next = PageKey {
                 page: self.state.current_page.saturating_add(1),
@@ -329,7 +345,9 @@ impl RumpressApp {
                 });
                 ui.allocate_ui(vec2(half_w, row), |ui| {
                     ui.label("Notes:");
-                    show_fitted(ui, self.texture_at(notes, RENDER_SCALE));
+                    if self.layout != PageLayout::Full {
+                        show_fitted(ui, self.texture_at(notes, RENDER_SCALE));
+                    }
                 });
             });
 

@@ -5,6 +5,7 @@ use clap::Parser;
 mod app;
 mod cli;
 mod input;
+mod layout;
 mod pdf;
 mod reload;
 mod render;
