@@ -6,6 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::load::SizedTexture;
@@ -16,6 +17,7 @@ use egui::{
 
 use crate::input::{self, Action};
 use crate::pdf::{Half, SlideIndex};
+use crate::reload::{self, ReloadWatcher};
 use crate::render::{DocumentInfo, PageKey, RenderHandle, RenderKey};
 use crate::state::DeckState;
 use crate::timer::{self, Timer};
@@ -58,20 +60,36 @@ pub struct RumpressApp {
     last_page: u16,
     /// Key actions collected from both viewports, applied once per frame.
     pending_actions: RefCell<Vec<Action>>,
+    /// Watches the PDF file; when it changes the document is reloaded.
+    reload_watcher: Option<ReloadWatcher>,
+    /// Path of the loaded PDF, for reload requests.
+    pdf_path: PathBuf,
     /// Set when either window is closed by the window manager.
     close_requested: Cell<bool>,
 }
 
 impl RumpressApp {
     /// Builds the app from the parts assembled in [`crate::run::run`].
+    ///
+    /// `pdf_path` is the loaded document; when a file watcher can be set up
+    /// for it, changes trigger a live reload. Watcher failure is not fatal
+    /// (the deck just never live-reloads), so it is logged and skipped.
     pub fn new(
         render: RenderHandle,
         state: DeckState,
         info: DocumentInfo,
         timer: Timer,
         swap_halves: bool,
+        pdf_path: PathBuf,
     ) -> RumpressApp {
         let slides = SlideIndex::from_labels(&info.labels);
+        let reload_watcher = match reload::watch(&pdf_path) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                log::warn!("live reload unavailable for {}: {e}", pdf_path.display());
+                None
+            }
+        };
         RumpressApp {
             render,
             state,
@@ -84,6 +102,8 @@ impl RumpressApp {
             strokes: Strokes::default(),
             last_page: 0,
             pending_actions: RefCell::new(Vec::new()),
+            reload_watcher,
+            pdf_path,
             close_requested: Cell::new(false),
         }
     }
@@ -189,6 +209,19 @@ impl RumpressApp {
                     OVERVIEW_SCALE,
                 );
             }
+        }
+    }
+
+    /// Checks the file watcher; on change, asks the render thread to reload
+    /// the document. The new `DocumentInfo` is picked up by `poll_render`
+    /// (rebuilds the slide index, clamps the page, clears textures).
+    fn poll_reload(&mut self) {
+        let Some(watcher) = self.reload_watcher.as_mut() else {
+            return;
+        };
+        if watcher.poll() {
+            log::info!("detected change in {}, reloading", self.pdf_path.display());
+            self.render.reload(self.pdf_path.clone());
         }
     }
 
@@ -439,6 +472,7 @@ impl eframe::App for RumpressApp {
             self.close_requested.set(true);
         }
 
+        self.poll_reload();
         self.poll_render(ctx);
         self.show_presentation(ctx);
 

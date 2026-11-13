@@ -6,6 +6,7 @@ mod app;
 mod cli;
 mod input;
 mod pdf;
+mod reload;
 mod render;
 mod run;
 mod state;

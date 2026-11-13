@@ -23,7 +23,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let state = DeckState::new(SlideIndex::from_labels(&info.labels));
     let timer = Timer::new(args.time.map(|m| Duration::from_secs(m * 60)));
 
-    let app = RumpressApp::new(render, state, info, timer, args.swap_halves);
+    let app = RumpressApp::new(render, state, info, timer, args.swap_halves, args.pdf);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("rumpress-presenter"),
