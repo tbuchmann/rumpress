@@ -13,7 +13,7 @@ use crate::timer::Timer;
 
 /// Runs the presenter application until the user quits.
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
-    env_logger::init();
+    // Logging is initialized in `main` (default filter `info`).
 
     // Fail fast with a clear message before any window or render thread
     // exists: a missing or unreadable file would otherwise only surface as

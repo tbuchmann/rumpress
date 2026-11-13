@@ -7,7 +7,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use egui::load::SizedTexture;
 use egui::{
@@ -193,36 +193,35 @@ impl RumpressApp {
         let slide_half = self.slide_half();
         let notes_half = self.notes_half();
         let page = self.state.current_page;
-        self.render.request(
+        // Every texture this frame may draw: current page slide+notes halves,
+        // next page, next slide's first page, and overview thumbnails when
+        // the grid is open. Anything else in the texture map is evicted below.
+        let mut live_keys: std::collections::HashSet<RenderKey> = std::collections::HashSet::new();
+        for key in [
             PageKey {
                 page,
                 half: slide_half,
             },
-            scale,
-        );
-        self.render.request(
             PageKey {
                 page: page.saturating_add(1),
                 half: slide_half,
             },
-            scale,
-        );
-        self.render.request(
             PageKey {
                 page,
                 half: notes_half,
             },
-            scale,
-        );
+        ] {
+            live_keys.insert(RenderKey::new(key, scale));
+            self.render.request(key, scale);
+        }
         if let Some(next) = self.slides.next_slide(self.state.current_slide) {
             let first = self.slides.first_page(next);
-            self.render.request(
-                PageKey {
-                    page: first,
-                    half: slide_half,
-                },
-                scale,
-            );
+            let key = PageKey {
+                page: first,
+                half: slide_half,
+            };
+            live_keys.insert(RenderKey::new(key, scale));
+            self.render.request(key, scale);
         }
 
         // Overview thumbnails: first page of every slide, at low scale. The
@@ -230,15 +229,20 @@ impl RumpressApp {
         if self.overview_visible {
             for slide in 0..self.slides.slide_count() {
                 let first = self.slides.first_page(slide);
-                self.render.request(
-                    PageKey {
-                        page: first,
-                        half: slide_half,
-                    },
-                    OVERVIEW_SCALE,
-                );
+                let key = PageKey {
+                    page: first,
+                    half: slide_half,
+                };
+                live_keys.insert(RenderKey::new(key, OVERVIEW_SCALE));
+                self.render.request(key, OVERVIEW_SCALE);
             }
         }
+
+        // Evict UI textures that no frame needs anymore: a 150-page deck
+        // would otherwise accumulate ~1 GB of GPU memory at RENDER_SCALE 2.0.
+        // The render thread keeps its own bounded cache; this only bounds the
+        // uploaded texture set to what the current frame can show.
+        self.textures.retain(|k, _| live_keys.contains(k));
     }
 
     /// Checks the file watcher; on change, asks the render thread to reload
@@ -266,6 +270,17 @@ impl RumpressApp {
                 Action::ToggleHighlight => self.highlight_mode = !self.highlight_mode,
                 // Help overlay likewise lives in the app layer.
                 Action::ToggleHelp => self.help_visible = !self.help_visible,
+                // Esc closes whichever overlay mode is active (overview,
+                // highlight pen, help); in normal mode it does nothing.
+                Action::Escape => {
+                    if self.overview_visible {
+                        self.overview_visible = false;
+                    } else if self.highlight_mode {
+                        self.highlight_mode = false;
+                    } else {
+                        self.help_visible = false;
+                    }
+                }
                 _ => quit |= input::apply(&mut self.state, action, &mut self.timer),
             }
         }
@@ -558,6 +573,7 @@ const BINDINGS: &[(&str, &str)] = &[
     ("h", "toggle highlight pen"),
     ("t", "reset timer"),
     ("?", "toggle this help"),
+    ("Esc", "close overview / highlight / help"),
     ("q", "quit"),
 ];
 
@@ -621,19 +637,9 @@ fn draw_timer_bar(ui: &mut egui::Ui, timer: &Timer, slide: usize, slide_count: u
     }
 }
 
-/// The current wall-clock time as `HH:MM`, from `SystemTime`.
-///
-/// Limitation: this is UTC, not local time — the standard library offers no
-/// timezone conversion, and pulling in a chrono/tz dependency for a clock
-/// readout is not worth it yet. The clock will read wrong for anyone not
-/// living on UTC.
+/// The current wall-clock time as local `HH:MM`, via `chrono`.
 fn wall_clock_string() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let (h, m) = ((secs / 3600) % 24, (secs / 60) % 60);
-    format!("{h:02}:{m:02}")
+    chrono::Local::now().format("%H:%M").to_string()
 }
 
 /// Pace as colored text: green OnTrack, yellow within ±2 min, red otherwise,
@@ -654,8 +660,8 @@ fn pace_text(timer: &Timer, now: Instant, slide: usize, slide_count: usize) -> O
     Some(RichText::new(text).color(color))
 }
 
-/// Formats a duration as whole minutes, e.g. `2 min`. Rounds to the nearest
-/// minute instead of truncating, so a 30–59 s deviation is not hidden as
+/// Formats a duration as whole minutes, e.g. `2 min`. Rounds *up* to the
+/// next minute (`div_ceil`), so a 30–59 s deviation is not hidden as
 /// `+0 min`.
 fn format_minutes(d: Duration) -> String {
     format!("{} min", d.as_secs().div_ceil(60))

@@ -71,7 +71,11 @@ impl DeckState {
     }
 
     /// Jump to the given slide's first page, clamped to the deck's range.
+    /// A no-op on an empty deck (e.g. a reload that yielded 0 pages).
     pub fn goto_slide(&mut self, slide: usize) {
+        if self.slides.slide_count() == 0 {
+            return;
+        }
         let slide = slide.min(self.slides.slide_count() - 1);
         self.current_slide = slide;
         self.current_page = self.slides.first_page(slide);
@@ -79,8 +83,11 @@ impl DeckState {
 
     /// Replaces the slide layout after a reload: recomputes the current slide
     /// from the current page, clamping the page to the new last page if it is
-    /// out of range.
+    /// out of range. An empty layout (0 pages) leaves the position unchanged.
     pub fn apply_slides(&mut self, slides: SlideIndex) {
+        if slides.slide_count() == 0 {
+            return;
+        }
         let last_page = slides.last_page(slides.slide_count() - 1);
         self.current_page = self.current_page.min(last_page);
         self.current_slide = slides.slide_of_page(self.current_page);
@@ -157,5 +164,19 @@ mod tests {
         assert!(s.blanked);
         assert!(!s.toggle_blank());
         assert!(!s.blanked);
+    }
+
+    #[test]
+    fn empty_deck_does_not_panic() {
+        // A reload that yields a 0-page document must not underflow
+        // `slide_count() - 1`, and must leave the position unchanged.
+        let mut s = DeckState::new(three_slides());
+        s.goto_slide(2);
+        s.apply_slides(SlideIndex::from_labels(&[] as &[String; 0]));
+        assert_eq!((s.current_slide, s.current_page), (2, 4));
+        // A DeckState built directly on an empty index must not panic either.
+        let mut e = DeckState::new(SlideIndex::from_labels(&[] as &[String; 0]));
+        e.goto_slide(0);
+        assert_eq!((e.current_slide, e.current_page), (0, 0));
     }
 }

@@ -2,10 +2,6 @@
 //!
 //! Both egui viewports call the same [`map_key`]/[`apply`] pair on their key
 //! events; this is the single place where keybindings are defined.
-//!
-//! Consumed by the presenter UI (later tasks); dead-code is expected until
-//! then.
-#![allow(dead_code)]
 
 use std::time::Instant;
 
@@ -24,6 +20,9 @@ pub enum Action {
     ToggleHighlight,
     ToggleHelp,
     ResetTimer,
+    /// Esc: closes whichever overlay mode is active (overview, highlight
+    /// pen, help); a no-op in normal mode. Applied in the app layer.
+    Escape,
     Quit,
     /// Key not bound to anything.
     None,
@@ -34,7 +33,8 @@ pub enum Action {
 ///
 /// Bindings: Right/Space/PageDown = NextPage, Left/PageUp = PrevPage,
 /// Down = NextSlide, Up = PrevSlide, `b` = ToggleBlank, `g` = ToggleOverview,
-/// `h` = ToggleHighlight, `?` = ToggleHelp, `t` = ResetTimer, `q` = Quit.
+/// `h` = ToggleHighlight, `?` = ToggleHelp, `t` = ResetTimer, `q` = Quit,
+/// Esc = Escape (closes the active overlay; no-op in normal mode).
 pub fn map_key(key: egui::Key, _modifiers: egui::Modifiers) -> Action {
     match key {
         egui::Key::ArrowRight | egui::Key::Space | egui::Key::PageDown => Action::NextPage,
@@ -47,6 +47,7 @@ pub fn map_key(key: egui::Key, _modifiers: egui::Modifiers) -> Action {
         egui::Key::Questionmark => Action::ToggleHelp,
         egui::Key::T => Action::ResetTimer,
         egui::Key::Q => Action::Quit,
+        egui::Key::Escape => Action::Escape,
         _ => Action::None,
     }
 }
@@ -54,9 +55,10 @@ pub fn map_key(key: egui::Key, _modifiers: egui::Modifiers) -> Action {
 /// Executes `action` against the presentation state, returning `true` if the
 /// app should quit.
 ///
-/// [`Action::ToggleOverview`], [`Action::ToggleHighlight`] and
-/// [`Action::ToggleHelp`] are mapped but not applied here: their state lives
-/// in the app layer, so they return `false` and leave the state unchanged.
+/// [`Action::ToggleOverview`], [`Action::ToggleHighlight`],
+/// [`Action::ToggleHelp`] and [`Action::Escape`] are mapped but not applied
+/// here: their state lives in the app layer, so they return `false` and
+/// leave the state unchanged.
 pub fn apply(state: &mut DeckState, action: Action, timer: &mut Timer) -> bool {
     match action {
         Action::NextPage => state.next_page(),
@@ -67,9 +69,9 @@ pub fn apply(state: &mut DeckState, action: Action, timer: &mut Timer) -> bool {
             state.toggle_blank();
         }
         Action::ResetTimer => timer.reset(Instant::now()),
-        // Overview/highlight/help state lives in the app layer (later
-        // tasks); until wired up these are no-ops that do not quit.
-        Action::ToggleOverview | Action::ToggleHighlight | Action::ToggleHelp => {}
+        // Overview/highlight/help/escape state lives in the app layer; these
+        // are applied there and do not quit.
+        Action::ToggleOverview | Action::ToggleHighlight | Action::ToggleHelp | Action::Escape => {}
         Action::Quit => return true,
         Action::None => {}
     }
@@ -154,6 +156,20 @@ mod tests {
         assert!(!apply(&mut s, Action::ToggleOverview, &mut t));
         assert!(!apply(&mut s, Action::ToggleHighlight, &mut t));
         assert!(!apply(&mut s, Action::ToggleHelp, &mut t));
+        assert_eq!((s.current_page, s.current_slide, s.blanked), (0, 0, false));
+    }
+
+    #[test]
+    fn escape_maps_to_escape_and_does_not_quit() {
+        // Esc maps to Action::Escape, which the app layer applies to close
+        // the active overlay; in `apply` it is a no-op that never quits.
+        assert_eq!(
+            map_key(egui::Key::Escape, Default::default()),
+            Action::Escape
+        );
+        let mut s = DeckState::new(SlideIndex::from_labels(&["1", "2"].map(String::from)));
+        let mut t = Timer::new(None);
+        assert!(!apply(&mut s, Action::Escape, &mut t));
         assert_eq!((s.current_page, s.current_slide, s.blanked), (0, 0, false));
     }
 

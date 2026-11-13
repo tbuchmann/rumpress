@@ -124,18 +124,18 @@ impl RenderHandle {
 }
 
 fn render_loop(
-    path: PathBuf,
+    original: PathBuf,
     rx: Receiver<Request>,
     bmp_out: Sender<(RenderKey, Bitmap)>,
     info_out: Sender<DocumentInfo>,
 ) {
-    let mut doc = match Document::open(&path) {
+    let mut doc = match Document::open(&original) {
         Ok(doc) => {
             emit_info(&doc, &info_out);
             Some(doc)
         }
         Err(e) => {
-            log::error!("failed to open {}: {e}", path.display());
+            log::error!("failed to open {}: {e}", original.display());
             None
         }
     };
@@ -159,7 +159,31 @@ fn render_loop(
                         emit_info(&new_doc, &info_out);
                         doc = Some(new_doc);
                     }
-                    Err(e) => log::error!("failed to reload {}: {e}", path.display()),
+                    Err(e) => {
+                        // The replacement may be a half-written file caught
+                        // mid-write; the original may still be valid, so try
+                        // to fall back to it before giving up.
+                        match Document::open(&original) {
+                            Ok(old_doc) => {
+                                log::warn!(
+                                    "reload of {} failed ({e}); keeping the original {}",
+                                    path.display(),
+                                    original.display()
+                                );
+                                emit_info(&old_doc, &info_out);
+                                doc = Some(old_doc);
+                            }
+                            Err(orig_e) => {
+                                log::error!(
+                                    "failed to reload {}: {e}; re-opening the original {} \
+                                     also failed: {orig_e} — renders are suspended until a \
+                                     successful reload",
+                                    path.display(),
+                                    original.display()
+                                );
+                            }
+                        }
+                    }
                 }
             }
             Request::Render(key, scale) => {

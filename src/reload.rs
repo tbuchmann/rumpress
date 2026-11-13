@@ -3,9 +3,11 @@
 //! [`watch`] starts a `notify` recommended watcher on the file's parent
 //! directory and filters events down to the target path. [`ReloadWatcher::poll`]
 //! returns `true` once per accepted change; events arriving within
-//! [`DEBOUNCE`] of the last accepted change are ignored, so a single save
-//! (which editors often split into several filesystem events, delivered
-//! asynchronously) is reported once.
+//! [`DEBOUNCE`] of the last accepted change are not reported immediately but
+//! remembered, and the first `poll()` after the window expires reports them,
+//! so a single save (which editors often split into several filesystem
+//! events, delivered asynchronously) is reported once — and a final
+//! touch-up write inside the window is never lost.
 //!
 //! Consumed by the app loop: on `poll() == true` it calls
 //! [`crate::render::RenderHandle::reload`], and the existing
@@ -39,8 +41,11 @@ pub struct ReloadWatcher {
     /// callback (the path filter runs in the callback).
     events: Receiver<()>,
     /// Time of the last accepted change; later events within [`DEBOUNCE`]
-    /// of it are ignored.
+    /// of it are deferred, not dropped.
     last_change: Option<Instant>,
+    /// Set when events arrived inside the debounce window: the first `poll()`
+    /// after the window expires reports them.
+    pending: bool,
     /// Kept alive: dropping the watcher unregisters the watch.
     _watcher: notify::RecommendedWatcher,
 }
@@ -74,6 +79,7 @@ pub fn watch(path: &Path) -> Result<ReloadWatcher, Error> {
     Ok(ReloadWatcher {
         events: rx,
         last_change: None,
+        pending: false,
         _watcher: watcher,
     })
 }
@@ -82,7 +88,9 @@ impl ReloadWatcher {
     /// Returns `true` if the watched file changed since the last poll.
     ///
     /// Debounced: events within [`DEBOUNCE`] of the last accepted change are
-    /// ignored, so one save is reported once.
+    /// deferred — remembered in `pending` and reported by the first `poll()`
+    /// after the window expires — so one save is reported once and a write
+    /// landing inside the window is never lost.
     pub fn poll(&mut self) -> bool {
         // Drain everything queued; a save often produces several events
         // (open, write, close) delivered asynchronously.
@@ -90,19 +98,30 @@ impl ReloadWatcher {
         while self.events.try_recv().is_ok() {
             changed = true;
         }
-        if !changed {
-            return false;
-        }
         let now = Instant::now();
-        match self.last_change {
-            // Inside the debounce window: drop the events entirely, so the
-            // same change is never re-reported.
-            Some(t) if now.duration_since(t) < DEBOUNCE => false,
-            _ => {
-                self.last_change = Some(now);
-                true
+        if changed {
+            match self.last_change {
+                // Inside the debounce window: defer the change instead of
+                // dropping it, so a final touch-up write still loads.
+                Some(t) if now.duration_since(t) < DEBOUNCE => self.pending = true,
+                _ => {
+                    self.last_change = Some(now);
+                    return true;
+                }
             }
         }
+        // No fresh events (or deferred ones): report a pending change once
+        // the debounce window has expired.
+        if self.pending
+            && self
+                .last_change
+                .is_some_and(|t| now.duration_since(t) >= DEBOUNCE)
+        {
+            self.pending = false;
+            self.last_change = Some(now);
+            return true;
+        }
+        false
     }
 }
 
@@ -127,6 +146,31 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert!(w.poll()); // change detected
         assert!(!w.poll()); // debounce: same change not re-reported
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_inside_debounce_window_is_deferred_not_dropped() {
+        let dir = std::env::temp_dir()
+            .join(format!("rumpress-test-defer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("deck.pdf");
+        std::fs::write(&file, b"one").unwrap();
+        let mut w = watch(&file).unwrap();
+        assert!(!w.poll()); // no change yet
+        std::thread::sleep(Duration::from_millis(600));
+        std::fs::write(&file, b"two").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(w.poll()); // first change accepted
+        // A touch-up write inside the 500 ms window: not reported now, but
+        // remembered.
+        std::fs::write(&file, b"three").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!w.poll(), "deferred change was reported inside the window");
+        // After the window expires, the deferred change is reported once.
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(w.poll(), "deferred change was lost");
+        assert!(!w.poll()); // and only once
         std::fs::remove_dir_all(&dir).ok();
     }
 }

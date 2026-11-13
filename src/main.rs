@@ -1,6 +1,7 @@
 use std::error::Error;
 
 use clap::Parser;
+use env_logger::Env;
 
 mod app;
 mod cli;
@@ -16,6 +17,9 @@ mod timer;
 mod ui;
 
 fn main() {
+    // Default to `info` so the fallback announcements (monitor detection
+    // failure, live-reload problems) are visible without RUST_LOG being set.
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     if let Err(e) = actual_main() {
         eprintln!("error: {e}");
         std::process::exit(1);

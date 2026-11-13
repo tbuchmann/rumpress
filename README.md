@@ -52,12 +52,27 @@ window rules so `rumpress-beamer` lands on the presentation monitor and
 
 If Hyprland detection fails (other compositors, `hyprctl` missing), both
 windows open windowed at window-manager defaults. You can still pin them
-statically with window rules in `hyprland.conf`:
+statically with window rules in `hyprland.conf`. On Hyprland ≥ 0.53 (current
+syntax, one property per rule):
 
 ```ini
-windowrulev2 = monitor 1, fullscreen, class:^(rumpress-beamer)$
+windowrule = monitor 1, match:class ^(rumpress-beamer)$
+windowrule = fullscreen on, match:class ^(rumpress-beamer)$
+windowrule = monitor 0, match:class ^(rumpress-presenter)$
+```
+
+On older Hyprland, use the `windowrulev2` spelling instead:
+
+```ini
+windowrulev2 = monitor 1, class:^(rumpress-beamer)$
+windowrulev2 = fullscreen, class:^(rumpress-beamer)$
 windowrulev2 = monitor 0, class:^(rumpress-presenter)$
 ```
+
+Each rule carries exactly one property — combining `monitor` and `fullscreen`
+in a single rule silently does nothing. (The runtime path rumpress itself uses
+still sends the deprecated `windowrulev2` keyword; Hyprland aliases it, so it
+works but logs a deprecation notice.)
 
 With only one monitor, rumpress opens just the presenter window.
 
@@ -74,6 +89,7 @@ With only one monitor, rumpress opens just the presenter window.
 | `h`                        | toggle highlight pen            |
 | `t`                        | reset timer                     |
 | `?`                        | toggle help overlay             |
+| `Esc`                      | close overview / highlight / help |
 | `q`                        | quit                            |
 
 Press `?` in the presenter window to see this list in the app.
@@ -91,12 +107,12 @@ both screens, with a yellow warning banner on the presenter.
 
 The PDF file is watched; editing and re-exporting the deck (e.g. from
 LaTeX) reloads it in place after a 500 ms debounce, keeping your current
-position clamped to the new page count. A failed reload (e.g. a half-written
-file) is logged and leaves the presentation running; the next successful
-change reloads normally.
+position clamped to the new page count. A write landing inside the debounce
+window is deferred and loaded once the window expires, so a final touch-up
+save is never lost. A failed reload (e.g. a half-written file) is logged and
+rumpress falls back to re-opening the original file, leaving the
+presentation running; the next successful change reloads normally.
 
 ## Known limitations
 
-- The wall-clock readout in the timer bar shows **UTC**, not local time: the
-  Rust standard library has no timezone conversion and rumpress does not yet
-  depend on a timezone crate.
+None currently documented.
