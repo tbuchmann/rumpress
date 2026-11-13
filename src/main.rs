@@ -7,6 +7,7 @@ mod pdf;
 mod render;
 mod run;
 mod state;
+mod timer;
 
 fn main() {
     if let Err(e) = actual_main() {
