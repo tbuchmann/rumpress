@@ -59,7 +59,11 @@ pub fn watch(path: &Path) -> Result<ReloadWatcher, Error> {
     let mut watcher =
         notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
             // Send failures only mean the UI side is gone; nothing to do.
+            // Ignore read-only access events (open/close-after-read): loading
+            // the PDF itself generates them, which would otherwise make every
+            // reload trigger the next one in an endless loop.
             if let Ok(event) = res
+                && !event.kind.is_access()
                 && event.paths.iter().any(|p| p == &filter)
             {
                 let _ = tx.send(());
@@ -172,6 +176,22 @@ mod tests {
         std::thread::sleep(Duration::from_millis(600));
         assert!(w.poll(), "deferred change was lost");
         assert!(!w.poll()); // and only once
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reading_the_file_is_not_a_change() {
+        let dir = std::env::temp_dir()
+            .join(format!("rumpress-test-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("deck.pdf");
+        std::fs::write(&file, b"one").unwrap();
+        let mut w = watch(&file).unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        // Opening and reading (what a reload does) must not count as a change.
+        let _ = std::fs::read(&file).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!w.poll(), "read access was reported as a change");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

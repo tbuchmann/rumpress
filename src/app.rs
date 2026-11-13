@@ -154,6 +154,14 @@ impl RumpressApp {
         }
     }
 
+    /// Asks the render thread for `key` only if we hold no texture for it.
+    /// (The handle drops requests that are already in flight.)
+    fn request_missing(&self, key: PageKey, scale: f32) {
+        if !self.textures.contains_key(&RenderKey::new(key, scale)) {
+            self.render.request(key, scale);
+        }
+    }
+
     /// The texture for `key` rendered at `scale`, if it has arrived.
     fn texture_at(&self, key: PageKey, scale: f32) -> Option<&TextureHandle> {
         self.textures.get(&RenderKey::new(key, scale))
@@ -212,7 +220,7 @@ impl RumpressApp {
             },
         ] {
             live_keys.insert(RenderKey::new(key, scale));
-            self.render.request(key, scale);
+            self.request_missing(key, scale);
         }
         if let Some(next) = self.slides.next_slide(self.state.current_slide) {
             let first = self.slides.first_page(next);
@@ -221,7 +229,7 @@ impl RumpressApp {
                 half: slide_half,
             };
             live_keys.insert(RenderKey::new(key, scale));
-            self.render.request(key, scale);
+            self.request_missing(key, scale);
         }
 
         // Overview thumbnails: first page of every slide, at low scale. The
@@ -234,7 +242,7 @@ impl RumpressApp {
                     half: slide_half,
                 };
                 live_keys.insert(RenderKey::new(key, OVERVIEW_SCALE));
-                self.render.request(key, OVERVIEW_SCALE);
+                self.request_missing(key, OVERVIEW_SCALE);
             }
         }
 
@@ -374,7 +382,7 @@ impl RumpressApp {
         // notes. The current slide gets the rest, so it is shown larger.
         // Width is recomputed every frame (not `default_width`, which egui
         // remembers from the first frame, before the window has its final size).
-        let side_w = (ctx.screen_rect().width() * 0.38).max(240.0);
+        let side_w = (ctx.content_rect().width() * 0.38).max(240.0);
         egui::SidePanel::right("presenter-side")
             .resizable(false)
             .exact_width(side_w)

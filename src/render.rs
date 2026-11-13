@@ -7,9 +7,10 @@
 //! Consumed by the egui app (later tasks); dead-code is expected until then.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
@@ -80,6 +81,9 @@ pub struct RenderHandle {
     tx: Sender<Request>,
     bitmaps: Receiver<(RenderKey, Bitmap)>,
     infos: Receiver<DocumentInfo>,
+    /// Requests sent but not yet delivered by `poll`; identical requests are
+    /// dropped while one is in flight.
+    in_flight: Arc<Mutex<HashSet<RenderKey>>>,
 }
 
 impl RenderHandle {
@@ -96,25 +100,37 @@ impl RenderHandle {
             tx,
             bitmaps: bmp_rx,
             infos: info_rx,
+            in_flight: Arc::default(),
         }
     }
 
     /// Requests a render of `key` at `scale` pixels per point.
     ///
-    /// Deduplication of identical consecutive requests happens on the render
-    /// thread; the handle only forwards.
+    /// A request identical to one still in flight is dropped. A request for a
+    /// page the thread has already rendered is answered again from its cache,
+    /// so callers that evicted the texture can get it back.
     pub fn request(&self, key: PageKey, scale: f32) {
+        let rkey = RenderKey::new(key, scale);
+        if !self.in_flight.lock().unwrap_or_else(|e| e.into_inner()).insert(rkey) {
+            return;
+        }
         let _ = self.tx.send(Request::Render(key, scale));
     }
 
     /// Replaces the document, clearing the cache. Emits new [`DocumentInfo`].
     pub fn reload(&self, path: PathBuf) {
+        self.in_flight.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let _ = self.tx.send(Request::Reload(path));
     }
 
     /// Returns the next finished bitmap, if any. Non-blocking.
     pub fn poll(&self) -> Option<(RenderKey, Bitmap)> {
-        self.bitmaps.try_recv().ok()
+        let item = self.bitmaps.try_recv().ok()?;
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&item.0);
+        Some(item)
     }
 
     /// Returns the pending [`DocumentInfo`], if any. Non-blocking.
@@ -142,14 +158,12 @@ fn render_loop(
 
     let mut cache: HashMap<RenderKey, Bitmap> = HashMap::new();
     let mut order: Vec<RenderKey> = Vec::new(); // insertion order for eviction
-    let mut last: Option<RenderKey> = None;
 
     while let Ok(msg) = rx.recv() {
         match msg {
             Request::Reload(path) => {
                 cache.clear();
                 order.clear();
-                last = None;
                 // Drop the old document first: only one `Document` may be
                 // alive at a time (see `pdf::Document`), so opening the new
                 // one while holding the old would deadlock.
@@ -188,12 +202,14 @@ fn render_loop(
             }
             Request::Render(key, scale) => {
                 let rkey = RenderKey::new(key, scale);
-                if last.as_ref() == Some(&rkey) {
-                    continue; // identical to the last queued request
-                }
-                last = Some(rkey);
-                if cache.contains_key(&rkey) {
-                    continue; // already rendered at this scale
+                // Already rendered: answer again from the cache. The UI evicts
+                // textures it no longer shows, so it may legitimately ask for
+                // a page we still hold (e.g. stepping back one slide).
+                if let Some(bmp) = cache.get(&rkey) {
+                    if bmp_out.send((rkey, bmp.clone())).is_err() {
+                        break; // UI gone
+                    }
+                    continue;
                 }
                 let Some(doc) = doc.as_ref() else { continue };
                 match doc.render(key.page, key.half, scale) {
@@ -318,19 +334,30 @@ mod tests {
     }
 
     #[test]
-    fn cached_page_is_not_rerendered() {
+    fn evicted_page_can_be_requested_again() {
+        // Regression: the UI drops textures it no longer shows. Stepping
+        // forward and back re-requests a page the thread still has cached;
+        // it must be delivered again, not silently skipped (blank slide).
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
-        let key = PageKey {
+        let a = PageKey {
+            page: 0,
+            half: Half::Full,
+        };
+        let b = PageKey {
             page: 1,
             half: Half::Full,
         };
-        h.request(key, 1.0);
+        h.request(a, 1.0);
+        let (first, bmp1) = wait_for(|| h.poll());
+        assert_eq!(first.page, a);
+        h.request(b, 1.0);
         wait_for(|| h.poll());
-        // Request the same page again: served from cache, but the thread
-        // does not push a second bitmap for it.
-        h.request(key, 1.0);
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(h.poll().is_none(), "cached page was re-rendered");
+        // Back to `a`: the caller holds no texture for it any more.
+        h.request(a, 1.0);
+        let (again, bmp2) = wait_for(|| h.poll());
+        assert_eq!(again.page, a);
+        assert_eq!((bmp2.width, bmp2.height), (bmp1.width, bmp1.height));
+        assert_eq!(bmp2.rgba, bmp1.rgba);
     }
 
     #[test]
@@ -351,18 +378,10 @@ mod tests {
             "full-scale request was served from the thumbnail cache"
         );
         // And the reverse order: the cached full render must not swallow a
-        // new thumbnail request either.
+        // new thumbnail request; it is served again at the thumbnail size.
         h.request(key, 0.3);
-        match h.poll() {
-            Some((_, thumb2)) => assert_eq!(thumb2.width, thumb.width),
-            None => {
-                std::thread::sleep(Duration::from_millis(100));
-                assert!(
-                    h.poll().is_none(),
-                    "thumbnail request after full render was neither served nor re-rendered"
-                );
-            }
-        }
+        let (_, thumb2) = wait_for(|| h.poll());
+        assert_eq!(thumb2.width, thumb.width);
     }
 
     #[test]
