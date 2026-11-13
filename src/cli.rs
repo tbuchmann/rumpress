@@ -23,6 +23,20 @@ pub struct Args {
 }
 
 #[cfg(test)]
+impl Args {
+    /// All-defaults constructor for tests: no explicit monitor choices.
+    pub fn test_default() -> Args {
+        Args {
+            pdf: PathBuf::from("test.pdf"),
+            time: None,
+            present_monitor: None,
+            presenter_monitor: None,
+            swap_halves: false,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -36,8 +50,17 @@ mod tests {
 
     #[test]
     fn parses_time_and_monitors() {
-        let a = Args::parse_from(["rumpress", "deck.pdf", "--time", "45",
-            "--present-monitor", "1", "--presenter-monitor", "0", "--swap-halves"]);
+        let a = Args::parse_from([
+            "rumpress",
+            "deck.pdf",
+            "--time",
+            "45",
+            "--present-monitor",
+            "1",
+            "--presenter-monitor",
+            "0",
+            "--swap-halves",
+        ]);
         assert_eq!(a.time, Some(45));
         assert_eq!(a.present_monitor, Some(1));
         assert_eq!(a.presenter_monitor, Some(0));

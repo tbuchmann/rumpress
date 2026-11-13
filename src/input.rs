@@ -82,10 +82,22 @@ mod tests {
 
     #[test]
     fn arrow_keys_map_to_page_steps() {
-        assert_eq!(map_key(egui::Key::ArrowRight, Default::default()), Action::NextPage);
-        assert_eq!(map_key(egui::Key::Space, Default::default()), Action::NextPage);
-        assert_eq!(map_key(egui::Key::ArrowDown, Default::default()), Action::NextSlide);
-        assert_eq!(map_key(egui::Key::B, Default::default()), Action::ToggleBlank);
+        assert_eq!(
+            map_key(egui::Key::ArrowRight, Default::default()),
+            Action::NextPage
+        );
+        assert_eq!(
+            map_key(egui::Key::Space, Default::default()),
+            Action::NextPage
+        );
+        assert_eq!(
+            map_key(egui::Key::ArrowDown, Default::default()),
+            Action::NextSlide
+        );
+        assert_eq!(
+            map_key(egui::Key::B, Default::default()),
+            Action::ToggleBlank
+        );
     }
 
     #[test]

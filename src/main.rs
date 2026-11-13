@@ -6,6 +6,7 @@ mod app;
 mod cli;
 mod input;
 mod layout;
+mod monitors;
 mod pdf;
 mod reload;
 mod render;

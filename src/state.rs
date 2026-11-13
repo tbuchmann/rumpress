@@ -23,7 +23,12 @@ pub struct DeckState {
 impl DeckState {
     /// New state at the first page of the deck, not blanked.
     pub fn new(slides: SlideIndex) -> DeckState {
-        DeckState { current_page: 0, current_slide: 0, blanked: false, slides }
+        DeckState {
+            current_page: 0,
+            current_slide: 0,
+            blanked: false,
+            slides,
+        }
     }
 
     /// One page forward: within the current slide's overlays first, then to

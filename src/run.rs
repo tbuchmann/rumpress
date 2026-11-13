@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::RumpressApp;
 use crate::cli::Args;
+use crate::monitors;
 use crate::pdf::SlideIndex;
 use crate::render::RenderHandle;
 use crate::state::DeckState;
@@ -23,25 +24,53 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let state = DeckState::new(SlideIndex::from_labels(&info.labels));
     let timer = Timer::new(args.time.map(|m| Duration::from_secs(m * 60)));
 
-    let app = RumpressApp::new(render, state, info, timer, args.swap_halves, args.pdf);
+    // Resolve monitor placement before any window exists: ask Hyprland which
+    // outputs are available, decide where each window goes, and write window
+    // rules so Hyprland maps the windows onto those monitors. Any failure
+    // degrades gracefully to window-manager defaults.
+    let (present_monitor, _presenter_monitor) = match monitors::list() {
+        Ok(list) => {
+            let (present, presenter) = monitors::assign(&args, &list);
+            if let Some(m) = &present {
+                monitors::set_monitor_rule(m, "rumpress-beamer");
+            }
+            if let Some(m) = &presenter {
+                monitors::set_monitor_rule(m, "rumpress-presenter");
+            }
+            (present, presenter)
+        }
+        Err(e) => {
+            log::warn!("monitor detection failed ({e}); using window-manager defaults");
+            (None, None)
+        }
+    };
+    if present_monitor.is_none() {
+        log::info!("single monitor: presenter opens windowed, no separate beamer window");
+    }
+
+    let app = RumpressApp::new(
+        render,
+        state,
+        info,
+        timer,
+        args.swap_halves,
+        args.pdf,
+        present_monitor,
+    );
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("rumpress-presenter"),
+        viewport: egui::ViewportBuilder::default()
+            .with_title("rumpress-presenter")
+            .with_app_id("rumpress-presenter"),
         ..Default::default()
     };
-    eframe::run_native(
-        "rumpress",
-        options,
-        Box::new(|_cc| Ok(Box::new(app))),
-    )
-    .map_err(|e| -> Box<dyn Error> { format!("eframe failed: {e}").into() })?;
+    eframe::run_native("rumpress", options, Box::new(|_cc| Ok(Box::new(app))))
+        .map_err(|e| -> Box<dyn Error> { format!("eframe failed: {e}").into() })?;
     Ok(())
 }
 
 /// Polls for the initial [`crate::render::DocumentInfo`] for up to ~5 s.
-fn wait_for_document_info(
-    render: &RenderHandle,
-) -> Option<crate::render::DocumentInfo> {
+fn wait_for_document_info(render: &RenderHandle) -> Option<crate::render::DocumentInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if let Some(info) = render.take_document_info() {

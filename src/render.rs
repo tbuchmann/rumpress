@@ -175,10 +175,11 @@ fn render_loop(
                 match doc.render(key.page, key.half, scale) {
                     Ok(bmp) => {
                         if cache.len() >= CACHE_CAP
-                            && let Some(oldest) = order.first().copied() {
-                                cache.remove(&oldest);
-                                order.remove(0);
-                            }
+                            && let Some(oldest) = order.first().copied()
+                        {
+                            cache.remove(&oldest);
+                            order.remove(0);
+                        }
                         cache.insert(rkey, bmp.clone());
                         order.push(rkey);
                         if bmp_out.send((rkey, bmp)).is_err() {
@@ -195,7 +196,9 @@ fn render_loop(
 fn emit_info(doc: &Document, out: &Sender<DocumentInfo>) {
     let page_count = doc.page_count();
     let page_size = doc.page_size(0).unwrap_or((0.0, 0.0));
-    let labels = (0..page_count).filter_map(|p| doc.page_label(p).ok()).collect();
+    let labels = (0..page_count)
+        .filter_map(|p| doc.page_label(p).ok())
+        .collect();
     let _ = out.send(DocumentInfo {
         page_count,
         page_size,
@@ -226,7 +229,13 @@ mod tests {
     #[test]
     fn returns_requested_bitmap_once() {
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
-        h.request(PageKey { page: 0, half: Half::Left }, 1.0);
+        h.request(
+            PageKey {
+                page: 0,
+                half: Half::Left,
+            },
+            1.0,
+        );
         let (key, bmp) = wait_for(|| h.poll());
         assert_eq!(key.page.page, 0);
         assert_eq!(bmp.width, 640);
@@ -256,9 +265,27 @@ mod tests {
     #[test]
     fn duplicate_requests_yield_one_bitmap() {
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
-        h.request(PageKey { page: 0, half: Half::Full }, 1.0);
-        h.request(PageKey { page: 0, half: Half::Full }, 1.0);
-        h.request(PageKey { page: 0, half: Half::Full }, 1.0);
+        h.request(
+            PageKey {
+                page: 0,
+                half: Half::Full,
+            },
+            1.0,
+        );
+        h.request(
+            PageKey {
+                page: 0,
+                half: Half::Full,
+            },
+            1.0,
+        );
+        h.request(
+            PageKey {
+                page: 0,
+                half: Half::Full,
+            },
+            1.0,
+        );
         let (key, _) = wait_for(|| h.poll());
         assert_eq!(key.page.page, 0);
         // Give the thread time to process any (wrongly) duplicated requests.
@@ -269,7 +296,10 @@ mod tests {
     #[test]
     fn cached_page_is_not_rerendered() {
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
-        let key = PageKey { page: 1, half: Half::Full };
+        let key = PageKey {
+            page: 1,
+            half: Half::Full,
+        };
         h.request(key, 1.0);
         wait_for(|| h.poll());
         // Request the same page again: served from cache, but the thread
@@ -284,7 +314,10 @@ mod tests {
         // The cache is keyed by (page, scale): a thumbnail render must not
         // satisfy a later full-resolution request for the same page.
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
-        let key = PageKey { page: 0, half: Half::Full };
+        let key = PageKey {
+            page: 0,
+            half: Half::Full,
+        };
         h.request(key, 0.3);
         let (_, thumb) = wait_for(|| h.poll());
         h.request(key, 1.0);
@@ -311,7 +344,10 @@ mod tests {
     #[test]
     fn reload_clears_cache() {
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
-        let key = PageKey { page: 0, half: Half::Full };
+        let key = PageKey {
+            page: 0,
+            half: Half::Full,
+        };
         h.request(key, 1.0);
         wait_for(|| h.poll());
         h.reload(Path::new(ONE_PAGE).into());
@@ -328,9 +364,21 @@ mod tests {
     #[test]
     fn out_of_range_request_is_dropped_not_fatal() {
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
-        h.request(PageKey { page: 99, half: Half::Full }, 1.0);
+        h.request(
+            PageKey {
+                page: 99,
+                half: Half::Full,
+            },
+            1.0,
+        );
         // The thread must survive and still serve a later valid request.
-        h.request(PageKey { page: 0, half: Half::Left }, 1.0);
+        h.request(
+            PageKey {
+                page: 0,
+                half: Half::Left,
+            },
+            1.0,
+        );
         let (key, _) = wait_for(|| h.poll());
         assert_eq!(key.page.page, 0);
     }

@@ -1,6 +1,6 @@
 //! Overview grid: layout math for the slide-thumbnail grid.
 
-use egui::{pos2, Rect, vec2};
+use egui::{Rect, pos2, vec2};
 
 /// Columns in the overview grid on a normal (wide) viewport.
 const GRID_COLUMNS: usize = 4;
@@ -58,7 +58,10 @@ pub fn grid_geometry(viewport: egui::Rect, slide_count: usize, aspect: f32) -> V
             let col = slide % columns;
             let row = slide / columns;
             Rect::from_min_size(
-                pos2(x0 + col as f32 * (cell_w + gap), y0 + row as f32 * (cell_h + gap)),
+                pos2(
+                    x0 + col as f32 * (cell_w + gap),
+                    y0 + row as f32 * (cell_h + gap),
+                ),
                 vec2(cell_w, cell_h),
             )
         })
@@ -71,11 +74,17 @@ mod tests {
 
     #[test]
     fn grid_geometry_lays_out_row_major() {
-        let rects = grid_geometry(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)), 8, 16.0/9.0);
+        let rects = grid_geometry(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)),
+            8,
+            16.0 / 9.0,
+        );
         assert_eq!(rects.len(), 8);
-        assert!(rects[1].left() > rects[0].left());   // second in row
-        assert!(rects[4].top() > rects[0].top());     // second row
+        assert!(rects[1].left() > rects[0].left()); // second in row
+        assert!(rects[4].top() > rects[0].top()); // second row
         // all rects inside viewport
-        assert!(rects.iter().all(|r| egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)).contains_rect(*r)));
+        assert!(rects.iter().all(|r| {
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)).contains_rect(*r)
+        }));
     }
 }

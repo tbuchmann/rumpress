@@ -72,6 +72,11 @@ pub struct RumpressApp {
     pdf_path: PathBuf,
     /// Set when either window is closed by the window manager.
     close_requested: Cell<bool>,
+    /// Monitor the beamer window was assigned to, if any. `None` means
+    /// single-monitor fallback: the beamer stays windowed (and hidden).
+    present_monitor: Option<String>,
+    /// Ensures the one-shot beamer fullscreen command is sent only once.
+    beamer_fullscreen: Cell<bool>,
 }
 
 impl RumpressApp {
@@ -87,6 +92,7 @@ impl RumpressApp {
         timer: Timer,
         swap_halves: bool,
         pdf_path: PathBuf,
+        present_monitor: Option<String>,
     ) -> RumpressApp {
         let slides = SlideIndex::from_labels(&info.labels);
         let layout = detect(info.page_size, swap_halves);
@@ -113,6 +119,8 @@ impl RumpressApp {
             reload_watcher,
             pdf_path,
             close_requested: Cell::new(false),
+            present_monitor,
+            beamer_fullscreen: Cell::new(false),
         }
     }
 
@@ -253,12 +261,25 @@ impl RumpressApp {
 
     /// Shows the beamer viewport. The closure only reads `self`, so it can
     /// borrow immutably while `update` keeps `&mut self` for the rest.
-    fn show_presentation(&self, ctx: &Context) {
+    fn show_presentation(&mut self, ctx: &Context) {
+        if self.present_monitor.is_none() {
+            return; // single monitor: no separate beamer window
+        }
         ctx.show_viewport_immediate(
             ViewportId::from_hash_of("presentation"),
-            ViewportBuilder::default().with_title("rumpress-beamer"),
+            ViewportBuilder::default()
+                .with_title("rumpress-beamer")
+                .with_app_id("rumpress-beamer"),
             |ctx, _class| self.draw_presentation(ctx),
         );
+        // Fullscreen the beamer once, now that its viewport exists; the
+        // window rule already placed it on the assigned monitor.
+        if !self.beamer_fullscreen.replace(true) {
+            ctx.send_viewport_cmd_to(
+                ViewportId::from_hash_of("presentation"),
+                ViewportCommand::Fullscreen(true),
+            );
+        }
     }
 
     /// Content of the beamer window: the current slide on black, letterboxed.
@@ -493,7 +514,6 @@ impl eframe::App for RumpressApp {
         self.poll_reload();
         self.poll_render(ctx);
         self.show_presentation(ctx);
-
         // Highlight strokes belong to one page: clear them when the page
         // changes (including jumps via the overview grid).
         if self.state.current_page != self.last_page {

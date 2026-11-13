@@ -13,7 +13,10 @@ pub struct Timer {
 
 impl Timer {
     pub fn new(target: Option<Duration>) -> Timer {
-        Timer { start: None, target }
+        Timer {
+            start: None,
+            target,
+        }
     }
 
     /// Starts the clock at `at`. Idempotent: the first call wins.
@@ -76,7 +79,7 @@ pub fn pace(t: &Timer, now: Instant, slide: usize, slide_count: usize) -> Pace {
 
 #[cfg(test)]
 mod tests {
-    use super::{pace, Pace, Timer};
+    use super::{Pace, Timer, pace};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -85,7 +88,10 @@ mod tests {
         let t0 = Instant::now();
         t.start(t0);
         t.start(t0 + Duration::from_secs(10)); // ignored
-        assert_eq!(t.elapsed(t0 + Duration::from_secs(5)), Duration::from_secs(5));
+        assert_eq!(
+            t.elapsed(t0 + Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
     }
 
     #[test]
@@ -94,11 +100,18 @@ mod tests {
         t.start(Instant::now());
         let now = Instant::now();
         // 2 min in, at slide 1 of 5: expected 2 min -> on track
-        assert!(matches!(pace(&t, now + Duration::from_secs(120), 1, 5), Pace::OnTrack));
+        assert!(matches!(
+            pace(&t, now + Duration::from_secs(120), 1, 5),
+            Pace::OnTrack
+        ));
         // 2 min in, at slide 3 of 5: expected 6 min -> ahead by 4 min
-        assert!(matches!(pace(&t, now + Duration::from_secs(120), 3, 5), Pace::Ahead(d) if d == Duration::from_secs(240)));
+        assert!(
+            matches!(pace(&t, now + Duration::from_secs(120), 3, 5), Pace::Ahead(d) if d == Duration::from_secs(240))
+        );
         // 6 min in, at slide 1 of 5: behind by 4 min
-        assert!(matches!(pace(&t, now + Duration::from_secs(360), 1, 5), Pace::Behind(d) if d == Duration::from_secs(240)));
+        assert!(
+            matches!(pace(&t, now + Duration::from_secs(360), 1, 5), Pace::Behind(d) if d == Duration::from_secs(240))
+        );
     }
 
     #[test]
@@ -107,7 +120,10 @@ mod tests {
         let t0 = Instant::now();
         t.start(t0);
         t.reset(t0 + Duration::from_secs(100));
-        assert_eq!(t.elapsed(t0 + Duration::from_secs(105)), Duration::from_secs(5));
+        assert_eq!(
+            t.elapsed(t0 + Duration::from_secs(105)),
+            Duration::from_secs(5)
+        );
     }
 
     #[test]
@@ -129,7 +145,10 @@ mod tests {
         let mut t = Timer::new(None);
         t.start(Instant::now());
         let now = Instant::now();
-        assert!(matches!(pace(&t, now + Duration::from_secs(9999), 3, 5), Pace::OnTrack));
+        assert!(matches!(
+            pace(&t, now + Duration::from_secs(9999), 3, 5),
+            Pace::OnTrack
+        ));
     }
 
     #[test]
@@ -138,11 +157,18 @@ mod tests {
         t.start(Instant::now());
         let now = Instant::now();
         // Slide 2 of 5: expected 4 min. 4 min + 30 s exactly -> on track.
-        assert!(matches!(pace(&t, now + Duration::from_secs(240 + 30), 2, 5), Pace::OnTrack));
+        assert!(matches!(
+            pace(&t, now + Duration::from_secs(240 + 30), 2, 5),
+            Pace::OnTrack
+        ));
         // 31 s over -> behind by 31 s.
-        assert!(matches!(pace(&t, now + Duration::from_secs(240 + 31), 2, 5), Pace::Behind(d) if d == Duration::from_secs(31)));
+        assert!(
+            matches!(pace(&t, now + Duration::from_secs(240 + 31), 2, 5), Pace::Behind(d) if d == Duration::from_secs(31))
+        );
         // 31 s under -> ahead by 31 s.
-        assert!(matches!(pace(&t, now + Duration::from_secs(240 - 31), 2, 5), Pace::Ahead(d) if d == Duration::from_secs(31)));
+        assert!(
+            matches!(pace(&t, now + Duration::from_secs(240 - 31), 2, 5), Pace::Ahead(d) if d == Duration::from_secs(31))
+        );
     }
 
     #[test]
@@ -151,8 +177,13 @@ mod tests {
         t.start(Instant::now());
         let now = Instant::now();
         // Slide 0: expected 0; 10 s in is within tolerance.
-        assert!(matches!(pace(&t, now + Duration::from_secs(10), 0, 5), Pace::OnTrack));
+        assert!(matches!(
+            pace(&t, now + Duration::from_secs(10), 0, 5),
+            Pace::OnTrack
+        ));
         // 60 s in at slide 0 -> behind by 60 s.
-        assert!(matches!(pace(&t, now + Duration::from_secs(60), 0, 5), Pace::Behind(d) if d == Duration::from_secs(60)));
+        assert!(
+            matches!(pace(&t, now + Duration::from_secs(60), 0, 5), Pace::Behind(d) if d == Duration::from_secs(60))
+        );
     }
 }
