@@ -77,7 +77,9 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("rumpress-presenter")
-            .with_app_id("rumpress-presenter"),
+            .with_app_id("rumpress-presenter")
+            .with_inner_size([1600.0, 900.0])
+            .with_min_inner_size([800.0, 450.0]),
         ..Default::default()
     };
     eframe::run_native("rumpress", options, Box::new(|_cc| Ok(Box::new(app))))

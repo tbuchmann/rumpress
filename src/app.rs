@@ -350,6 +350,51 @@ impl RumpressApp {
     /// Content of the presenter window: current slide, next-page preview,
     /// notes, timer bar, and (toggled with `g`) the overview grid.
     fn draw_presenter(&mut self, ctx: &Context) {
+        // Timer pinned to the bottom of the window.
+        egui::TopBottomPanel::bottom("presenter-timer").show(ctx, |ui| {
+            draw_timer_bar(
+                ui,
+                &self.timer,
+                self.state.current_slide,
+                self.slides.slide_count(),
+            );
+        });
+
+        let has_notes = self.layout != PageLayout::Full;
+        let next = PageKey {
+            page: self.state.current_page.saturating_add(1),
+            half: self.slide_half(),
+        };
+        let notes = PageKey {
+            page: self.state.current_page,
+            half: self.notes_half(),
+        };
+
+        // Side column (~38% of the window width): next-page preview over
+        // notes. The current slide gets the rest, so it is shown larger.
+        // Width is recomputed every frame (not `default_width`, which egui
+        // remembers from the first frame, before the window has its final size).
+        let side_w = (ctx.screen_rect().width() * 0.38).max(240.0);
+        egui::SidePanel::right("presenter-side")
+            .resizable(false)
+            .exact_width(side_w)
+            .show(ctx, |ui| {
+                let cell_h = if has_notes {
+                    ui.available_height() / 2.0
+                } else {
+                    ui.available_height()
+                };
+                let w = ui.available_width();
+                ui.allocate_ui(vec2(w, cell_h), |ui| {
+                    ui.label("Next:");
+                    show_fitted(ui, self.texture_at(next, RENDER_SCALE));
+                });
+                if has_notes {
+                    ui.label("Notes:");
+                    show_fitted(ui, self.texture_at(notes, RENDER_SCALE));
+                }
+            });
+
         CentralPanel::default().show(ctx, |ui| {
             if self.layout == PageLayout::Full {
                 ui.label(
@@ -357,49 +402,12 @@ impl RumpressApp {
                         .color(Color32::YELLOW),
                 );
             }
-            let row = ui.available_height() / 2.0;
-            let next = PageKey {
-                page: self.state.current_page.saturating_add(1),
-                half: self.slide_half(),
-            };
-            let notes = PageKey {
-                page: self.state.current_page,
-                half: self.notes_half(),
-            };
-            ui.horizontal(|ui| {
-                ui.set_height(row);
-                let half_w = ui.available_width() / 2.0;
-                ui.allocate_ui(vec2(half_w, row), |ui| {
-                    ui.label(format!(
-                        "Slide {} / {}",
-                        self.state.current_slide + 1,
-                        self.slides.slide_count()
-                    ));
-                    self.draw_current_slide(ui);
-                });
-                ui.allocate_ui(vec2(half_w, row), |ui| {
-                    ui.label("Next:");
-                    show_fitted(ui, self.texture_at(next, RENDER_SCALE));
-                });
-            });
-            ui.horizontal(|ui| {
-                ui.set_height(row);
-                let half_w = ui.available_width() / 2.0;
-                ui.allocate_ui(vec2(half_w, row), |ui| {
-                    draw_timer_bar(
-                        ui,
-                        &self.timer,
-                        self.state.current_slide,
-                        self.slides.slide_count(),
-                    );
-                });
-                ui.allocate_ui(vec2(half_w, row), |ui| {
-                    ui.label("Notes:");
-                    if self.layout != PageLayout::Full {
-                        show_fitted(ui, self.texture_at(notes, RENDER_SCALE));
-                    }
-                });
-            });
+            ui.label(format!(
+                "Slide {} / {}",
+                self.state.current_slide + 1,
+                self.slides.slide_count()
+            ));
+            self.draw_current_slide(ui);
 
             if self.overview_visible {
                 self.draw_overview(ui);
@@ -492,14 +500,19 @@ impl RumpressApp {
         let avail = ui.available_size();
         let scale = (avail.x / tex_size.x).min(avail.y / tex_size.y);
         let size = tex_size * scale;
-        let rect = Rect::from_min_size(ui.cursor().min, size);
+        let sense = if self.highlight_mode {
+            egui::Sense::drag()
+        } else {
+            egui::Sense::hover()
+        };
+        // Allocate the space so later widgets are laid out after the slide.
+        let (rect, response) = ui.allocate_exact_size(size, sense);
         Image::from_texture(SizedTexture::new(tex.id(), tex_size)).paint_at(ui, rect);
         highlight::draw(ui.painter(), rect, &self.strokes);
 
         if !self.highlight_mode {
             return;
         }
-        let response = ui.allocate_rect(rect, egui::Sense::drag());
         if let Some(pos) = response.interact_pointer_pos() {
             let norm = egui::pos2(
                 ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0),
@@ -631,9 +644,21 @@ fn draw_timer_bar(ui: &mut egui::Ui, timer: &Timer, slide: usize, slide_count: u
     if let Some(target) = timer.target()
         && target.as_secs_f32() > 0.0
     {
-        ui.label(format!("Target: {}", format_duration(target)));
         let frac = (elapsed.as_secs_f32() / target.as_secs_f32()).clamp(0.0, 1.0);
-        ui.add(ProgressBar::new(frac).show_percentage());
+        ui.add(ProgressBar::new(frac).text(format!(
+            "Time: {} / {}",
+            format_duration(elapsed),
+            format_duration(target)
+        )));
+    }
+    // Slide progress: how far through the deck, and how many slides remain.
+    if slide_count > 0 {
+        let shown = (slide + 1).min(slide_count);
+        let frac = shown as f32 / slide_count as f32;
+        let remaining = slide_count - shown;
+        ui.add(ProgressBar::new(frac).text(format!(
+            "Slide {shown} / {slide_count} \u{2014} {remaining} remaining"
+        )));
     }
 }
 
