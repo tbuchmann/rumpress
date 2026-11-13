@@ -10,6 +10,7 @@ mod render;
 mod run;
 mod state;
 mod timer;
+mod ui;
 
 fn main() {
     if let Err(e) = actual_main() {

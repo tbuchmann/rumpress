@@ -6,11 +6,11 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::{
     CentralPanel, Color32, ColorImage, Context, Event, Frame, Image, ProgressBar, Rect,
-    TextureHandle, TextureOptions, ViewportBuilder, ViewportId, ViewportCommand, vec2,
+    RichText, TextureHandle, TextureOptions, ViewportBuilder, ViewportId, ViewportCommand, vec2,
 };
 use egui::load::SizedTexture;
 
@@ -18,13 +18,17 @@ use crate::input::{self, Action};
 use crate::pdf::{Half, SlideIndex};
 use crate::render::{DocumentInfo, PageKey, RenderHandle};
 use crate::state::DeckState;
-use crate::timer::Timer;
+use crate::timer::{self, Timer};
+use crate::ui::overview::grid_geometry;
 
 /// Pixels per point used when rendering pages.
 ///
 /// Fixed for now: every texture is rendered at this scale and scaled down/up
 /// by the GPU when drawn. Dynamic per-viewport scaling is a later refinement.
 const RENDER_SCALE: f32 = 2.0;
+
+/// Pixels per point used for overview-grid thumbnails.
+const OVERVIEW_SCALE: f32 = 0.3;
 
 /// How often to wake up for the timer display.
 const REPAINT_INTERVAL: Duration = Duration::from_millis(200);
@@ -40,6 +44,8 @@ pub struct RumpressApp {
     /// Uploaded GPU textures by page key, replaced as new bitmaps arrive.
     textures: HashMap<PageKey, TextureHandle>,
     swap_halves: bool,
+    /// Whether the overview grid is shown in the presenter window.
+    overview_visible: bool,
     /// Key actions collected from both viewports, applied once per frame.
     pending_actions: RefCell<Vec<Action>>,
     /// Set when either window is closed by the window manager.
@@ -63,6 +69,7 @@ impl RumpressApp {
             timer,
             textures: HashMap::new(),
             swap_halves,
+            overview_visible: false,
             pending_actions: RefCell::new(Vec::new()),
             close_requested: Cell::new(false),
         }
@@ -114,6 +121,16 @@ impl RumpressApp {
             let first = self.slides.first_page(next);
             self.render.request(PageKey { page: first, half: slide_half }, scale);
         }
+
+        // Overview thumbnails: first page of every slide, at low scale. The
+        // render thread dedups and caches, so this is cheap per frame.
+        if self.overview_visible {
+            for slide in 0..self.slides.slide_count() {
+                let first = self.slides.first_page(slide);
+                self.render
+                    .request(PageKey { page: first, half: slide_half }, OVERVIEW_SCALE);
+            }
+        }
     }
 
     /// Applies collected key actions; returns `true` if the app should quit.
@@ -121,7 +138,11 @@ impl RumpressApp {
         let actions = std::mem::take(&mut *self.pending_actions.borrow_mut());
         let mut quit = self.close_requested.replace(false);
         for action in actions {
-            quit |= input::apply(&mut self.state, action, &mut self.timer);
+            match action {
+                // Overview visibility lives in the app layer, not DeckState.
+                Action::ToggleOverview => self.overview_visible = !self.overview_visible,
+                _ => quit |= input::apply(&mut self.state, action, &mut self.timer),
+            }
         }
         quit
     }
@@ -165,8 +186,8 @@ impl RumpressApp {
     }
 
     /// Content of the presenter window: current slide, next-page preview,
-    /// notes, and a timer bar (stub; Tasks 9/10 fill in bar and overview).
-    fn draw_presenter(&self, ctx: &Context) {
+    /// notes, timer bar, and (toggled with `g`) the overview grid.
+    fn draw_presenter(&mut self, ctx: &Context) {
         CentralPanel::default().show(ctx, |ui| {
             let row = ui.available_height() / 2.0;
             let cur = PageKey { page: self.state.current_page, half: self.slide_half() };
@@ -196,24 +217,83 @@ impl RumpressApp {
                 ui.set_height(row);
                 let half_w = ui.available_width() / 2.0;
                 ui.allocate_ui(vec2(half_w, row), |ui| {
-                    draw_timer_bar(ui, &self.timer);
+                    draw_timer_bar(ui, &self.timer, self.state.current_slide, self.slides.slide_count());
                 });
                 ui.allocate_ui(vec2(half_w, row), |ui| {
                     ui.label("Notes:");
                     show_fitted(ui, self.textures.get(&notes));
                 });
             });
+
+            if self.overview_visible {
+                self.draw_overview(ui);
+            }
         });
     }
 
+    /// Full-panel overview grid: one thumbnail per logical slide; clicking a
+    /// thumbnail jumps to that slide.
+    fn draw_overview(&mut self, ui: &mut egui::Ui) {
+        let slide_count = self.slides.slide_count();
+        if slide_count == 0 {
+            return;
+        }
+        // Slide aspect from the first page's texture, falling back to 16:9.
+        let aspect = self
+            .textures
+            .get(&PageKey { page: 0, half: self.slide_half() })
+            .map(|tex| {
+                let size = tex.size_vec2();
+                (size.x / size.y.max(1.0)).max(f32::EPSILON)
+            })
+            .unwrap_or(16.0 / 9.0);
+
+        let viewport = ui.max_rect();
+        let rects = grid_geometry(viewport, slide_count, aspect);
+        let slide_half = self.slide_half();
+        for (slide, rect) in rects.iter().enumerate() {
+            let first = self.slides.first_page(slide);
+            let key = PageKey { page: first, half: slide_half };
+            let response = ui.allocate_rect(*rect, egui::Sense::click());
+            if let Some(tex) = self.textures.get(&key) {
+                let tex_size = tex.size_vec2();
+                if tex_size.x > 0.0 && tex_size.y > 0.0 {
+                    // Letterbox the thumbnail inside its cell.
+                    let scale = (rect.width() / tex_size.x).min(rect.height() / tex_size.y);
+                    let size = tex_size * scale;
+                    let draw = Rect::from_center_size(rect.center(), size);
+                    Image::from_texture(SizedTexture::new(tex.id(), tex_size)).paint_at(ui, draw);
+                }
+            }
+            // Highlight the current slide; label every cell.
+            let text = format!("{}", slide + 1);
+            let color = if slide == self.state.current_slide {
+                Color32::LIGHT_BLUE
+            } else {
+                Color32::GRAY
+            };
+            ui.painter().text(
+                rect.left_bottom() + vec2(4.0, -4.0),
+                egui::Align2::LEFT_BOTTOM,
+                text,
+                egui::TextStyle::Small.resolve(ui.style()),
+                color,
+            );
+            if response.clicked() {
+                self.state.goto_slide(slide);
+            }
+        }
+    }
+
     /// Reads key events from `ctx` (whichever viewport is being drawn) into
-    /// the pending queue.
+    /// the pending queue. Auto-repeat events are dropped: every action is a
+    /// step or a toggle, so holding a key should not machine-gun.
     fn collect_key_actions(&self, ctx: &Context) {
         let actions: Vec<Action> = ctx.input(|i| {
             i.events
                 .iter()
                 .filter_map(|event| match event {
-                    Event::Key { key, pressed: true, modifiers, .. } => {
+                    Event::Key { key, pressed: true, repeat: false, modifiers, .. } => {
                         Some(input::map_key(*key, *modifiers))
                     }
                     _ => None,
@@ -257,15 +337,61 @@ fn show_fitted(ui: &mut egui::Ui, tex: Option<&TextureHandle>) {
     ui.add(Image::from_texture(SizedTexture::new(tex.id(), size)).max_size(ui.available_size()));
 }
 
-/// Timer readout and progress bar (stub; Task 9 builds the real bar).
-fn draw_timer_bar(ui: &mut egui::Ui, timer: &Timer) {
-    let elapsed = timer.elapsed(Instant::now());
-    ui.label(format!("⏱ {}", format_duration(elapsed)));
+/// Timer readout: elapsed, wall clock, target, and pace, plus a progress bar.
+fn draw_timer_bar(ui: &mut egui::Ui, timer: &Timer, slide: usize, slide_count: usize) {
+    let now = Instant::now();
+    let elapsed = timer.elapsed(now);
+    ui.horizontal(|ui| {
+        ui.label(format!("⏱ {}", format_duration(elapsed)));
+        ui.label(wall_clock_string());
+        if let Some(pace) = pace_text(timer, now, slide, slide_count) {
+            ui.label(pace.0.color(pace.1));
+        }
+    });
     if let Some(target) = timer.target()
         && target.as_secs_f32() > 0.0 {
+            ui.label(format!("Target: {}", format_duration(target)));
             let frac = (elapsed.as_secs_f32() / target.as_secs_f32()).clamp(0.0, 1.0);
-            ui.add(ProgressBar::new(frac));
+            ui.add(ProgressBar::new(frac).show_percentage());
         }
+}
+
+/// The current wall-clock time as `HH:MM`, from `SystemTime`.
+fn wall_clock_string() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (h, m) = ((secs / 3600) % 24, (secs / 60) % 60);
+    format!("{h:02}:{m:02}")
+}
+
+/// Pace as colored text: green OnTrack, yellow within ±2 min, red otherwise,
+/// with signed minutes. `None` when no target is set.
+fn pace_text(
+    timer: &Timer,
+    now: Instant,
+    slide: usize,
+    slide_count: usize,
+) -> Option<(RichText, Color32)> {
+    timer.target()?;
+    let (color, text) = match timer::pace(timer, now, slide, slide_count) {
+        timer::Pace::Ahead(d) if d >= Duration::from_secs(120) => {
+            (Color32::RED, format!("ahead +{}", format_minutes(d)))
+        }
+        timer::Pace::Ahead(d) => (Color32::YELLOW, format!("ahead +{}", format_minutes(d))),
+        timer::Pace::Behind(d) if d >= Duration::from_secs(120) => {
+            (Color32::RED, format!("behind -{}", format_minutes(d)))
+        }
+        timer::Pace::Behind(d) => (Color32::YELLOW, format!("behind -{}", format_minutes(d))),
+        timer::Pace::OnTrack => (Color32::GREEN, "on track".to_string()),
+    };
+    Some((RichText::new(text).color(color), color))
+}
+
+/// Formats a duration as whole minutes, e.g. `2 min`.
+fn format_minutes(d: Duration) -> String {
+    format!("{} min", d.as_secs() / 60)
 }
 
 /// Formats a duration as `MM:SS` (hours fold into minutes).
