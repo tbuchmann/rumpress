@@ -4,6 +4,7 @@ use clap::Parser;
 
 mod cli;
 mod pdf;
+mod render;
 mod run;
 
 fn main() {

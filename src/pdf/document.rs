@@ -3,15 +3,14 @@
 //! Consumed by the render thread (later tasks); dead-code is expected until then.
 #![allow(dead_code)]
 
-use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use pdfium_render::prelude::*;
 use thiserror::Error;
 
 /// Which half of a 2×1 (dual-slide) page to render.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Half {
     Left,
     Right,
@@ -52,26 +51,37 @@ pub enum Error {
 }
 
 /// A Pdfium-backed PDF document.
+///
+/// Pdfium is not thread-safe, and pdfium-render's `thread_safe` feature does not
+/// lock individual calls: it makes each live `Pdfium` instance hold a global
+/// lock from init until drop. Consequences we design around:
+///
+/// * There is exactly one `Pdfium` per process (leaked, never dropped — its
+///   `Drop` calls `FPDF_DestroyLibrary`, which is global and would break any
+///   other live document).
+/// * At most one `Document` is alive at a time: each holds [`DOCUMENT_LOCK`]
+///   for its lifetime, so concurrent users (e.g. parallel tests) take turns.
+///   Opening a second document on a thread that still holds one deadlocks, so
+///   drop the old document before opening its replacement.
 pub struct Document {
-    // `ManuallyDrop` prevents the compiler's automatic field drop, so the
-    // manual `Drop` impl controls the order: it drops the inner document
-    // via `ManuallyDrop::drop`, then `_pdfium` (the Pdfium bindings the
-    // document borrows) drops automatically afterwards.
-    document: ManuallyDrop<PdfDocument<'static>>,
-    _pdfium: Pin<Box<Pdfium>>,
+    document: PdfDocument<'static>,
     page_count: u16,
+    // Declared last so it is released after `document` is dropped.
+    _guard: MutexGuard<'static, ()>,
 }
 
-impl Drop for Document {
-    fn drop(&mut self) {
-        // Drop the document in place before the Pdfium bindings it borrows.
-        // SAFETY: `document` has not been dropped or moved out (ManuallyDrop
-        // guarantees the compiler will not drop it again), so dropping it
-        // exactly once here is sound. `_pdfium` drops automatically after
-        // this, in the correct order.
-        unsafe { ManuallyDrop::drop(&mut self.document) };
-    }
-}
+static DOCUMENT_LOCK: Mutex<()> = Mutex::new(());
+
+static PDFIUM: OnceLock<SharedPdfium> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+struct SharedPdfium(&'static Pdfium);
+
+// SAFETY: the instance is leaked (valid for the whole process) and only ever
+// used while holding `DOCUMENT_LOCK` (see `Document`), so there is never
+// concurrent access to Pdfium from multiple threads.
+unsafe impl Send for SharedPdfium {}
+unsafe impl Sync for SharedPdfium {}
 
 impl Document {
     /// Opens a document, binding to the Pdfium library in the usual way.
@@ -83,26 +93,33 @@ impl Document {
     ///
     /// This is the testable seam: passing a bogus path forces the
     /// [`Error::PdfiumUnavailable`] path without needing a broken environment.
+    /// (A *successful* explicit library is a separate leaked instance and must
+    /// not be mixed with the default one in the same process.)
     pub fn open_with_library(path: &Path, library_path: Option<&Path>) -> Result<Document, Error> {
-        let pdfium = Box::pin(Self::bind(library_path)?);
-        // SAFETY: `pdfium` is pinned (never moved) and stored in the returned
-        // struct, so the self-referential `document` always points at a live
-        // `Pdfium`. `PdfDocument<'static>` is sound because the `Pdfium`
-        // outlives the document: the manual `Drop` impl drops the document
-        // (via `ManuallyDrop::drop`) first, and the pinned `Pdfium` is only
-        // dropped afterwards.
-        let document = unsafe {
-            std::mem::transmute::<PdfDocument<'_>, PdfDocument<'static>>(
-                pdfium.load_pdf_from_file(path, None).map_err(Error::from)?,
-            )
+        let guard = DOCUMENT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let pdfium: &'static Pdfium = match library_path {
+            Some(_) => Box::leak(Box::new(Self::bind(library_path)?)),
+            None => Self::shared_pdfium()?,
         };
-        let page_count = document.pages().len() as u16;
+        let document = pdfium.load_pdf_from_file(path, None).map_err(Error::from)?;
+        let page_count = document.pages().len();
         Ok(Document {
-            document: ManuallyDrop::new(document),
-            _pdfium: pdfium,
+            document,
             page_count,
+            _guard: guard,
         })
     }
+
+    /// Caller must hold [`DOCUMENT_LOCK`].
+    fn shared_pdfium() -> Result<&'static Pdfium, Error> {
+        if let Some(p) = PDFIUM.get() {
+            return Ok(p.0);
+        }
+        let leaked: &'static Pdfium = Box::leak(Box::new(Self::bind(None)?));
+        let _ = PDFIUM.set(SharedPdfium(leaked));
+        Ok(leaked)
+    }
+
     fn bind(library_path: Option<&Path>) -> Result<Pdfium, Error> {
         type BindAttempt = Box<dyn FnOnce() -> Result<Box<dyn PdfiumLibraryBindings>, PdfiumError>>;
 
