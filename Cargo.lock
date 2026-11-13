@@ -1681,8 +1681,6 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
- "zune-core",
- "zune-jpeg",
 ]
 
 [[package]]
@@ -2569,7 +2567,6 @@ dependencies = [
  "chrono",
  "console_error_panic_hook",
  "console_log",
- "image",
  "itertools",
  "js-sys",
  "libloading 0.9.0",

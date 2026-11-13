@@ -3,6 +3,7 @@ use std::error::Error;
 use clap::Parser;
 
 mod cli;
+mod pdf;
 mod run;
 
 fn main() {
