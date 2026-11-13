@@ -16,7 +16,7 @@ use egui::load::SizedTexture;
 
 use crate::input::{self, Action};
 use crate::pdf::{Half, SlideIndex};
-use crate::render::{DocumentInfo, PageKey, RenderHandle};
+use crate::render::{DocumentInfo, PageKey, RenderHandle, RenderKey};
 use crate::state::DeckState;
 use crate::timer::{self, Timer};
 use crate::ui::overview::grid_geometry;
@@ -41,8 +41,10 @@ pub struct RumpressApp {
     /// (`DeckState` keeps its own private copy.)
     slides: SlideIndex,
     timer: Timer,
-    /// Uploaded GPU textures by page key, replaced as new bitmaps arrive.
-    textures: HashMap<PageKey, TextureHandle>,
+    /// Uploaded GPU textures by render key (page + scale), replaced as new
+    /// bitmaps arrive. The scale is part of the key so overview thumbnails
+    /// never replace the full-resolution main-view textures.
+    textures: HashMap<RenderKey, TextureHandle>,
     swap_halves: bool,
     /// Whether the overview grid is shown in the presenter window.
     overview_visible: bool,
@@ -85,6 +87,11 @@ impl RumpressApp {
         if self.swap_halves { Half::Left } else { Half::Right }
     }
 
+    /// The texture for `key` rendered at `scale`, if it has arrived.
+    fn texture_at(&self, key: PageKey, scale: f32) -> Option<&TextureHandle> {
+        self.textures.get(&RenderKey::new(key, scale))
+    }
+
     /// Drains render-thread output into textures and (re)requests everything
     /// the UI needs. The render thread dedups and caches, so re-requesting
     /// every frame is cheap.
@@ -96,17 +103,17 @@ impl RumpressApp {
             self.slides = SlideIndex::from_labels(&info.labels);
             self.state.apply_slides(SlideIndex::from_labels(&info.labels));
         }
-        while let Some((key, bmp)) = self.render.poll() {
+        while let Some((rkey, bmp)) = self.render.poll() {
             let image = ColorImage::from_rgba_unmultiplied(
                 [bmp.width as usize, bmp.height as usize],
                 &bmp.rgba,
             );
-            if let Some(tex) = self.textures.get_mut(&key) {
+            if let Some(tex) = self.textures.get_mut(&rkey) {
                 tex.set(image, TextureOptions::default());
             } else {
-                let name = format!("page-{}-{:?}", key.page, key.half);
+                let name = format!("page-{}-{:?}-{}", rkey.page.page, rkey.page.half, rkey.scale);
                 let tex = ctx.load_texture(name, image, TextureOptions::default());
-                self.textures.insert(key, tex);
+                self.textures.insert(rkey, tex);
             }
         }
 
@@ -171,7 +178,7 @@ impl RumpressApp {
                     return; // black background is already in place
                 }
                 let key = PageKey { page: self.state.current_page, half: self.slide_half() };
-                let Some(tex) = self.textures.get(&key) else { return };
+                let Some(tex) = self.texture_at(key, RENDER_SCALE) else { return };
                 let tex_size = tex.size_vec2();
                 if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
                     return;
@@ -196,7 +203,6 @@ impl RumpressApp {
                 half: self.slide_half(),
             };
             let notes = PageKey { page: self.state.current_page, half: self.notes_half() };
-
             ui.horizontal(|ui| {
                 ui.set_height(row);
                 let half_w = ui.available_width() / 2.0;
@@ -206,11 +212,11 @@ impl RumpressApp {
                         self.state.current_slide + 1,
                         self.slides.slide_count()
                     ));
-                    show_fitted(ui, self.textures.get(&cur));
+                    show_fitted(ui, self.texture_at(cur, RENDER_SCALE));
                 });
                 ui.allocate_ui(vec2(half_w, row), |ui| {
                     ui.label("Next:");
-                    show_fitted(ui, self.textures.get(&next));
+                    show_fitted(ui, self.texture_at(next, RENDER_SCALE));
                 });
             });
             ui.horizontal(|ui| {
@@ -221,7 +227,7 @@ impl RumpressApp {
                 });
                 ui.allocate_ui(vec2(half_w, row), |ui| {
                     ui.label("Notes:");
-                    show_fitted(ui, self.textures.get(&notes));
+                    show_fitted(ui, self.texture_at(notes, RENDER_SCALE));
                 });
             });
 
@@ -240,8 +246,7 @@ impl RumpressApp {
         }
         // Slide aspect from the first page's texture, falling back to 16:9.
         let aspect = self
-            .textures
-            .get(&PageKey { page: 0, half: self.slide_half() })
+            .texture_at(PageKey { page: 0, half: self.slide_half() }, OVERVIEW_SCALE)
             .map(|tex| {
                 let size = tex.size_vec2();
                 (size.x / size.y.max(1.0)).max(f32::EPSILON)
@@ -255,7 +260,7 @@ impl RumpressApp {
             let first = self.slides.first_page(slide);
             let key = PageKey { page: first, half: slide_half };
             let response = ui.allocate_rect(*rect, egui::Sense::click());
-            if let Some(tex) = self.textures.get(&key) {
+            if let Some(tex) = self.texture_at(key, OVERVIEW_SCALE) {
                 let tex_size = tex.size_vec2();
                 if tex_size.x > 0.0 && tex_size.y > 0.0 {
                     // Letterbox the thumbnail inside its cell.
@@ -345,7 +350,7 @@ fn draw_timer_bar(ui: &mut egui::Ui, timer: &Timer, slide: usize, slide_count: u
         ui.label(format!("⏱ {}", format_duration(elapsed)));
         ui.label(wall_clock_string());
         if let Some(pace) = pace_text(timer, now, slide, slide_count) {
-            ui.label(pace.0.color(pace.1));
+            ui.label(pace);
         }
     });
     if let Some(target) = timer.target()
@@ -357,6 +362,11 @@ fn draw_timer_bar(ui: &mut egui::Ui, timer: &Timer, slide: usize, slide_count: u
 }
 
 /// The current wall-clock time as `HH:MM`, from `SystemTime`.
+///
+/// Limitation: this is UTC, not local time — the standard library offers no
+/// timezone conversion, and pulling in a chrono/tz dependency for a clock
+/// readout is not worth it yet. The clock will read wrong for anyone not
+/// living on UTC.
 fn wall_clock_string() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -373,7 +383,7 @@ fn pace_text(
     now: Instant,
     slide: usize,
     slide_count: usize,
-) -> Option<(RichText, Color32)> {
+) -> Option<RichText> {
     timer.target()?;
     let (color, text) = match timer::pace(timer, now, slide, slide_count) {
         timer::Pace::Ahead(d) if d >= Duration::from_secs(120) => {
@@ -386,12 +396,14 @@ fn pace_text(
         timer::Pace::Behind(d) => (Color32::YELLOW, format!("behind -{}", format_minutes(d))),
         timer::Pace::OnTrack => (Color32::GREEN, "on track".to_string()),
     };
-    Some((RichText::new(text).color(color), color))
+    Some(RichText::new(text).color(color))
 }
 
-/// Formats a duration as whole minutes, e.g. `2 min`.
+/// Formats a duration as whole minutes, e.g. `2 min`. Rounds to the nearest
+/// minute instead of truncating, so a 30–59 s deviation is not hidden as
+/// `+0 min`.
 fn format_minutes(d: Duration) -> String {
-    format!("{} min", d.as_secs() / 60)
+    format!("{} min", d.as_secs().div_ceil(60))
 }
 
 /// Formats a duration as `MM:SS` (hours fold into minutes).

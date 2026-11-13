@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -19,6 +20,41 @@ use crate::pdf::{Bitmap, Document, Half};
 pub struct PageKey {
     pub page: u16,
     pub half: Half,
+}
+
+/// Identifies a rendered bitmap: a [`PageKey`] at a specific scale.
+///
+/// The scale is part of the identity: the same page rendered at 2.0 and
+/// 0.3 pixels per point produces different bitmaps, and caching one under
+/// the other would show a blurry thumbnail where the full-resolution slide
+/// belongs. `f32` is not `Eq`/`Hash`, so the scale is compared by bit
+/// pattern (scales are program constants, never NaN).
+#[derive(Debug, Clone, Copy)]
+pub struct RenderKey {
+    pub page: PageKey,
+    /// Pixels per point.
+    pub scale: f32,
+}
+
+impl RenderKey {
+    /// Builds the key for `page` rendered at `scale` pixels per point.
+    pub fn new(page: PageKey, scale: f32) -> RenderKey {
+        RenderKey { page, scale }
+    }
+}
+
+impl PartialEq for RenderKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.page == other.page && self.scale.to_bits() == other.scale.to_bits()
+    }
+}
+impl Eq for RenderKey {}
+
+impl Hash for RenderKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.page.hash(state);
+        self.scale.to_bits().hash(state);
+    }
 }
 
 /// Snapshot of document metadata, sent to the UI on open/reload.
@@ -42,7 +78,7 @@ const CACHE_CAP: usize = 64;
 #[derive(Clone)]
 pub struct RenderHandle {
     tx: Sender<Request>,
-    bitmaps: Receiver<(PageKey, Bitmap)>,
+    bitmaps: Receiver<(RenderKey, Bitmap)>,
     infos: Receiver<DocumentInfo>,
 }
 
@@ -77,7 +113,7 @@ impl RenderHandle {
     }
 
     /// Returns the next finished bitmap, if any. Non-blocking.
-    pub fn poll(&self) -> Option<(PageKey, Bitmap)> {
+    pub fn poll(&self) -> Option<(RenderKey, Bitmap)> {
         self.bitmaps.try_recv().ok()
     }
 
@@ -90,7 +126,7 @@ impl RenderHandle {
 fn render_loop(
     path: PathBuf,
     rx: Receiver<Request>,
-    bmp_out: Sender<(PageKey, Bitmap)>,
+    bmp_out: Sender<(RenderKey, Bitmap)>,
     info_out: Sender<DocumentInfo>,
 ) {
     let mut doc = match Document::open(&path) {
@@ -104,9 +140,9 @@ fn render_loop(
         }
     };
 
-    let mut cache: HashMap<PageKey, Bitmap> = HashMap::new();
-    let mut order: Vec<PageKey> = Vec::new(); // insertion order for eviction
-    let mut last: Option<(PageKey, f32)> = None;
+    let mut cache: HashMap<RenderKey, Bitmap> = HashMap::new();
+    let mut order: Vec<RenderKey> = Vec::new(); // insertion order for eviction
+    let mut last: Option<RenderKey> = None;
 
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -127,12 +163,13 @@ fn render_loop(
                 }
             }
             Request::Render(key, scale) => {
-                if last == Some((key, scale)) {
+                let rkey = RenderKey::new(key, scale);
+                if last.as_ref() == Some(&rkey) {
                     continue; // identical to the last queued request
                 }
-                last = Some((key, scale));
-                if cache.contains_key(&key) {
-                    continue; // already rendered
+                last = Some(rkey);
+                if cache.contains_key(&rkey) {
+                    continue; // already rendered at this scale
                 }
                 let Some(doc) = doc.as_ref() else { continue };
                 match doc.render(key.page, key.half, scale) {
@@ -142,9 +179,9 @@ fn render_loop(
                                 cache.remove(&oldest);
                                 order.remove(0);
                             }
-                        cache.insert(key, bmp.clone());
-                        order.push(key);
-                        if bmp_out.send((key, bmp)).is_err() {
+                        cache.insert(rkey, bmp.clone());
+                        order.push(rkey);
+                        if bmp_out.send((rkey, bmp)).is_err() {
                             break; // UI gone
                         }
                     }
@@ -191,7 +228,7 @@ mod tests {
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
         h.request(PageKey { page: 0, half: Half::Left }, 1.0);
         let (key, bmp) = wait_for(|| h.poll());
-        assert_eq!(key.page, 0);
+        assert_eq!(key.page.page, 0);
         assert_eq!(bmp.width, 360);
         // second poll: nothing new
         assert!(h.poll().is_none());
@@ -223,7 +260,7 @@ mod tests {
         h.request(PageKey { page: 0, half: Half::Full }, 1.0);
         h.request(PageKey { page: 0, half: Half::Full }, 1.0);
         let (key, _) = wait_for(|| h.poll());
-        assert_eq!(key.page, 0);
+        assert_eq!(key.page.page, 0);
         // Give the thread time to process any (wrongly) duplicated requests.
         std::thread::sleep(Duration::from_millis(100));
         assert!(h.poll().is_none(), "duplicate requests were not deduped");
@@ -240,6 +277,35 @@ mod tests {
         h.request(key, 1.0);
         std::thread::sleep(Duration::from_millis(100));
         assert!(h.poll().is_none(), "cached page was re-rendered");
+    }
+
+    #[test]
+    fn same_page_at_different_scales_is_rendered_twice() {
+        // The cache is keyed by (page, scale): a thumbnail render must not
+        // satisfy a later full-resolution request for the same page.
+        let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
+        let key = PageKey { page: 0, half: Half::Full };
+        h.request(key, 0.3);
+        let (_, thumb) = wait_for(|| h.poll());
+        h.request(key, 1.0);
+        let (_, full) = wait_for(|| h.poll());
+        assert!(
+            full.width > thumb.width,
+            "full-scale request was served from the thumbnail cache"
+        );
+        // And the reverse order: the cached full render must not swallow a
+        // new thumbnail request either.
+        h.request(key, 0.3);
+        match h.poll() {
+            Some((_, thumb2)) => assert_eq!(thumb2.width, thumb.width),
+            None => {
+                std::thread::sleep(Duration::from_millis(100));
+                assert!(
+                    h.poll().is_none(),
+                    "thumbnail request after full render was neither served nor re-rendered"
+                );
+            }
+        }
     }
 
     #[test]
@@ -266,6 +332,6 @@ mod tests {
         // The thread must survive and still serve a later valid request.
         h.request(PageKey { page: 0, half: Half::Left }, 1.0);
         let (key, _) = wait_for(|| h.poll());
-        assert_eq!(key.page, 0);
+        assert_eq!(key.page.page, 0);
     }
 }
