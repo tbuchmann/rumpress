@@ -2,6 +2,7 @@ use std::error::Error;
 
 use clap::Parser;
 
+mod app;
 mod cli;
 mod input;
 mod pdf;
