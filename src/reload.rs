@@ -106,6 +106,7 @@ impl ReloadWatcher {
                 Some(t) if now.duration_since(t) < DEBOUNCE => self.pending = true,
                 _ => {
                     self.last_change = Some(now);
+                    self.pending = false;
                     return true;
                 }
             }
