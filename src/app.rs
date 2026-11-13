@@ -17,6 +17,7 @@ use egui::{
 
 use crate::input::{self, Action};
 use crate::layout::{PageLayout, detect};
+use crate::monitors;
 use crate::pdf::{Half, SlideIndex};
 use crate::reload::{self, ReloadWatcher};
 use crate::render::{DocumentInfo, PageKey, RenderHandle, RenderKey};
@@ -76,6 +77,11 @@ pub struct RumpressApp {
     /// single-monitor case; on detection failure the beamer still opens
     /// (windowed) so a static hyprland.conf rule can pin it.
     show_beamer: bool,
+    /// Whether the one-shot beamer fullscreen command may be sent. True only
+    /// when a presentation monitor was actually assigned; on detection
+    /// failure the beamer stays windowed so a static hyprland.conf rule can
+    /// pin it.
+    fullscreen_beamer: bool,
     /// Ensures the one-shot beamer fullscreen command is sent only once.
     beamer_fullscreen: Cell<bool>,
 }
@@ -93,7 +99,7 @@ impl RumpressApp {
         timer: Timer,
         swap_halves: bool,
         pdf_path: PathBuf,
-        show_beamer: bool,
+        placement: monitors::Placement,
     ) -> RumpressApp {
         let slides = SlideIndex::from_labels(&info.labels);
         let layout = detect(info.page_size, swap_halves);
@@ -120,7 +126,8 @@ impl RumpressApp {
             reload_watcher,
             pdf_path,
             close_requested: Cell::new(false),
-            show_beamer,
+            show_beamer: placement.show_beamer,
+            fullscreen_beamer: placement.fullscreen_beamer,
             beamer_fullscreen: Cell::new(false),
         }
     }
@@ -273,9 +280,10 @@ impl RumpressApp {
                 .with_app_id("rumpress-beamer"),
             |ctx, _class| self.draw_presentation(ctx),
         );
-        // Fullscreen the beamer once, now that its viewport exists; the
-        // window rule already placed it on the assigned monitor.
-        if !self.beamer_fullscreen.replace(true) {
+        // Fullscreen the beamer once, now that its viewport exists — but only
+        // when a presentation monitor was actually assigned; on detection
+        // failure the beamer stays windowed at window-manager defaults.
+        if self.fullscreen_beamer && !self.beamer_fullscreen.replace(true) {
             ctx.send_viewport_cmd_to(
                 ViewportId::from_hash_of("presentation"),
                 ViewportCommand::Fullscreen(true),

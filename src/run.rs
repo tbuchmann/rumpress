@@ -32,7 +32,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     // window; (c) detection failed — both windows still open, windowed at
     // window-manager defaults, so a static rule in hyprland.conf can pin the
     // beamer window.
-    let (_present_monitor, _presenter_monitor, show_beamer) = match monitors::list() {
+    let placement = match monitors::list() {
         Ok(list) => {
             let (present, presenter) = monitors::assign(&args, &list);
             if let Some(m) = &present {
@@ -41,13 +41,13 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             if let Some(m) = &presenter {
                 monitors::set_monitor_rule(m, "rumpress-presenter");
             }
-            let show_beamer = present.is_some();
-            if show_beamer {
+            if present.is_some() {
                 log::info!("monitors assigned: beamer on {present:?}, presenter on {presenter:?}");
+                monitors::Placement::assigned()
             } else {
-                log::info!("single monitor: presenter opens windowed, no separate beamer window");
+                log::warn!("single monitor: presenter opens windowed, no separate beamer window");
+                monitors::Placement::single_monitor()
             }
-            (present, presenter, show_beamer)
         }
         Err(e) => {
             log::warn!(
@@ -55,7 +55,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
                  both windows open windowed at window-manager defaults; a static \
                  window rule in hyprland.conf can still pin rumpress-beamer"
             );
-            (None, None, true)
+            monitors::Placement::detection_failed()
         }
     };
 
@@ -66,7 +66,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         timer,
         args.swap_halves,
         args.pdf,
-        show_beamer,
+        placement,
     );
 
     let options = eframe::NativeOptions {

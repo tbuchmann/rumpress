@@ -119,6 +119,50 @@ pub fn assign(args: &Args, monitors: &[Monitor]) -> (Option<String>, Option<Stri
     )
 }
 
+/// The outcome of monitor placement, consumed by the app layer.
+///
+/// `show_beamer` decides whether the beamer viewport is created at all;
+/// `fullscreen_beamer` decides whether the one-shot fullscreen command is
+/// sent once that viewport exists. They differ only in the detection-failure
+/// case: the beamer window still opens (windowed, so a static hyprland.conf
+/// rule can pin it), but must not fullscreen over the presenter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    /// Whether the beamer viewport is shown at all. False only in the
+    /// single-monitor case.
+    pub show_beamer: bool,
+    /// Whether the beamer window may be fullscreened. True only when a
+    /// presentation monitor was actually assigned.
+    pub fullscreen_beamer: bool,
+}
+
+impl Placement {
+    /// Monitors detected and assigned: beamer shown and fullscreened.
+    pub fn assigned() -> Self {
+        Self {
+            show_beamer: true,
+            fullscreen_beamer: true,
+        }
+    }
+
+    /// Single monitor: no beamer window at all.
+    pub fn single_monitor() -> Self {
+        Self {
+            show_beamer: false,
+            fullscreen_beamer: false,
+        }
+    }
+
+    /// Detection failed: both windows open windowed at window-manager
+    /// defaults.
+    pub fn detection_failed() -> Self {
+        Self {
+            show_beamer: true,
+            fullscreen_beamer: false,
+        }
+    }
+}
+
 /// Writes a Hyprland window rule pinning windows of `class` to `monitor`.
 ///
 /// Failures are not fatal: the documented fallback is static window rules in
