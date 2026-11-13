@@ -72,8 +72,26 @@ pub fn list() -> Result<Vec<Monitor>, Box<dyn std::error::Error>> {
 pub fn assign(args: &Args, monitors: &[Monitor]) -> (Option<String>, Option<String>) {
     let name = |i: usize| monitors.get(i).map(|m| m.name.clone());
 
-    let present = args.present_monitor.and_then(name);
-    let presenter = args.presenter_monitor.and_then(name);
+    let present = args.present_monitor.and_then(|i| {
+        let m = name(i);
+        if m.is_none() {
+            log::warn!(
+                "--present-monitor {i} is out of range ({} monitor(s) detected); ignoring it",
+                monitors.len()
+            );
+        }
+        m
+    });
+    let presenter = args.presenter_monitor.and_then(|i| {
+        let m = name(i);
+        if m.is_none() {
+            log::warn!(
+                "--presenter-monitor {i} is out of range ({} monitor(s) detected); ignoring it",
+                monitors.len()
+            );
+        }
+        m
+    });
 
     if monitors.len() < 2 {
         // Single monitor (or none): no separate presentation output.
@@ -170,5 +188,29 @@ mod tests {
         let (present, presenter) = assign(&Args::test_default(), &ms);
         assert_eq!(present, None);
         assert_eq!(presenter.as_deref(), Some("eDP-1"));
+    }
+
+    #[test]
+    fn assign_explicit_flags_win_over_defaults() {
+        let ms = vec![
+            Monitor {
+                name: "DP-1".into(),
+                width: 3840,
+                height: 2160,
+                primary: false,
+            },
+            Monitor {
+                name: "eDP-1".into(),
+                width: 1920,
+                height: 1080,
+                primary: true,
+            },
+        ];
+        let mut args = Args::test_default();
+        args.present_monitor = Some(1);
+        args.presenter_monitor = Some(0);
+        let (present, presenter) = assign(&args, &ms);
+        assert_eq!(present.as_deref(), Some("eDP-1"));
+        assert_eq!(presenter.as_deref(), Some("DP-1"));
     }
 }

@@ -72,9 +72,10 @@ pub struct RumpressApp {
     pdf_path: PathBuf,
     /// Set when either window is closed by the window manager.
     close_requested: Cell<bool>,
-    /// Monitor the beamer window was assigned to, if any. `None` means
-    /// single-monitor fallback: the beamer stays windowed (and hidden).
-    present_monitor: Option<String>,
+    /// Whether the beamer viewport is shown at all. False only in the
+    /// single-monitor case; on detection failure the beamer still opens
+    /// (windowed) so a static hyprland.conf rule can pin it.
+    show_beamer: bool,
     /// Ensures the one-shot beamer fullscreen command is sent only once.
     beamer_fullscreen: Cell<bool>,
 }
@@ -92,7 +93,7 @@ impl RumpressApp {
         timer: Timer,
         swap_halves: bool,
         pdf_path: PathBuf,
-        present_monitor: Option<String>,
+        show_beamer: bool,
     ) -> RumpressApp {
         let slides = SlideIndex::from_labels(&info.labels);
         let layout = detect(info.page_size, swap_halves);
@@ -119,7 +120,7 @@ impl RumpressApp {
             reload_watcher,
             pdf_path,
             close_requested: Cell::new(false),
-            present_monitor,
+            show_beamer,
             beamer_fullscreen: Cell::new(false),
         }
     }
@@ -262,7 +263,7 @@ impl RumpressApp {
     /// Shows the beamer viewport. The closure only reads `self`, so it can
     /// borrow immutably while `update` keeps `&mut self` for the rest.
     fn show_presentation(&mut self, ctx: &Context) {
-        if self.present_monitor.is_none() {
+        if !self.show_beamer {
             return; // single monitor: no separate beamer window
         }
         ctx.show_viewport_immediate(

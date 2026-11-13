@@ -26,9 +26,13 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
 
     // Resolve monitor placement before any window exists: ask Hyprland which
     // outputs are available, decide where each window goes, and write window
-    // rules so Hyprland maps the windows onto those monitors. Any failure
-    // degrades gracefully to window-manager defaults.
-    let (present_monitor, _presenter_monitor) = match monitors::list() {
+    // rules so Hyprland maps the windows onto those monitors. Three states:
+    // (a) monitors detected and assigned — window rules + fullscreen commands
+    // as usual; (b) a single monitor — presenter only, windowed, no beamer
+    // window; (c) detection failed — both windows still open, windowed at
+    // window-manager defaults, so a static rule in hyprland.conf can pin the
+    // beamer window.
+    let (_present_monitor, _presenter_monitor, show_beamer) = match monitors::list() {
         Ok(list) => {
             let (present, presenter) = monitors::assign(&args, &list);
             if let Some(m) = &present {
@@ -37,16 +41,23 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
             if let Some(m) = &presenter {
                 monitors::set_monitor_rule(m, "rumpress-presenter");
             }
-            (present, presenter)
+            let show_beamer = present.is_some();
+            if show_beamer {
+                log::info!("monitors assigned: beamer on {present:?}, presenter on {presenter:?}");
+            } else {
+                log::info!("single monitor: presenter opens windowed, no separate beamer window");
+            }
+            (present, presenter, show_beamer)
         }
         Err(e) => {
-            log::warn!("monitor detection failed ({e}); using window-manager defaults");
-            (None, None)
+            log::warn!(
+                "monitor detection failed ({e}); monitor placement unavailable — \
+                 both windows open windowed at window-manager defaults; a static \
+                 window rule in hyprland.conf can still pin rumpress-beamer"
+            );
+            (None, None, true)
         }
     };
-    if present_monitor.is_none() {
-        log::info!("single monitor: presenter opens windowed, no separate beamer window");
-    }
 
     let app = RumpressApp::new(
         render,
@@ -55,7 +66,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
         timer,
         args.swap_halves,
         args.pdf,
-        present_monitor,
+        show_beamer,
     );
 
     let options = eframe::NativeOptions {
