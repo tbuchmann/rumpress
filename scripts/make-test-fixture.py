@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Generate tests/fixtures/two-page.pdf: a minimal 2-page PDF with no
-external dependencies. Page 1 is 720x405 pt (a 2x1 beamer page), page 2
-is 612x792 pt (US Letter) so the two pages are distinguishable."""
+external dependencies. Page 1 is 1280x360 pt (a true 2x1 beamer notes
+page: two 640x360, i.e. 16:9, halves side by side), page 2 is 612x792 pt
+(US Letter) so the two pages are distinguishable."""
 
 import zlib
 
-PAGE_W1, PAGE_H1 = 720, 405
+PAGE_W1, PAGE_H1 = 1280, 360
 PAGE_W2, PAGE_H2 = 612, 792
 
 

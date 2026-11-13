@@ -3,7 +3,7 @@
 //!
 //! Notes decks are 2×1: one wide page whose left half is the slide shown on
 //! the beamer and whose right half holds the notes shown on the presenter.
-//! Anything that is not wide enough (aspect < 1.5) is treated as a plain
+//! Anything that is not wide enough (aspect < 1.9) is treated as a plain
 //! single page and shown in full on both windows.
 
 use crate::pdf::Half;
@@ -19,17 +19,20 @@ pub enum PageLayout {
 }
 
 /// Minimum width/height aspect ratio for a page to count as a 2×1 notes
-/// page. 16:9 (≈1.78) is the standard notes-deck format; 1.5 keeps a wide
-/// margin above it while still rejecting anything squarer.
-const SPLIT_MIN_ASPECT: f32 = 1.5;
+/// page.
+///
+/// A real beamer `show notes on second screen` page is two slide-shaped
+/// halves side by side, so its aspect is 2 × the slide aspect: ≈3.56 for a
+/// 16:9 deck and ≈2.67 for a 4:3 deck. A plain slide-only 16:9 deck is
+/// ≈1.778 and must be shown in full on both screens, so the threshold sits
+/// between 1.778 and 2.67. 1.9 is the smallest round value with a safe
+/// margin on both sides (2.0 would work too but sits closer to the 16:9
+/// slide aspect, leaving less headroom for slightly-wide slide formats).
+const SPLIT_MIN_ASPECT: f32 = 1.9;
 
 /// Detects the layout from the page size in points and the `--swap-halves`
 /// flag. A page counts as 2×1 when its aspect ratio (width / height) is at
 /// least [`SPLIT_MIN_ASPECT`].
-///
-/// Note: the task prose suggested a 1.9 threshold, but the task's own tests
-/// and fixtures classify a 720×405 (16:9, aspect ≈ 1.78) page as `Split` —
-/// the project's 2×1 fixture format — so the threshold is 1.5.
 pub fn detect(page_size: (f32, f32), swap_halves: bool) -> PageLayout {
     let (w, h) = page_size;
     let aspect = w / h.max(1.0);
@@ -52,15 +55,17 @@ mod tests {
 
     #[test]
     fn detects_split_and_swap() {
+        // 1280×360 = two 640×360 (16:9) halves side by side, the real
+        // beamer notes-page shape for a 16:9 deck (aspect ≈ 3.56).
         assert_eq!(
-            detect((720.0, 405.0), false),
+            detect((1280.0, 360.0), false),
             PageLayout::Split {
                 slide: Half::Left,
                 notes: Half::Right
             }
         );
         assert_eq!(
-            detect((720.0, 405.0), true),
+            detect((1280.0, 360.0), true),
             PageLayout::Split {
                 slide: Half::Right,
                 notes: Half::Left
@@ -72,5 +77,7 @@ mod tests {
     fn detects_full_page() {
         assert_eq!(detect((405.0, 720.0), false), PageLayout::Full); // portrait
         assert_eq!(detect((360.0, 405.0), false), PageLayout::Full); // 8:9
+        // A plain 16:9 slide-only deck (aspect ≈ 1.778) is not a 2×1 page.
+        assert_eq!(detect((720.0, 405.0), false), PageLayout::Full);
     }
 }

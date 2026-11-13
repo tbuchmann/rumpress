@@ -257,31 +257,31 @@ mod tests {
         let doc = Document::open(fixture()).unwrap();
         assert_eq!(doc.page_count(), 2);
         let (w, h) = doc.page_size(0).unwrap();
-        assert_eq!((w, h), (720.0, 405.0));
+        assert_eq!((w, h), (1280.0, 360.0));
     }
 
     #[test]
     fn renders_left_half_at_correct_dimensions() {
         let doc = Document::open(fixture()).unwrap();
         let bmp = doc.render(0, Half::Left, 1.0).unwrap();
-        assert_eq!((bmp.width, bmp.height), (360, 405));
-        assert_eq!(bmp.rgba.len(), (360 * 405 * 4) as usize);
+        assert_eq!((bmp.width, bmp.height), (640, 360));
+        assert_eq!(bmp.rgba.len(), (640 * 360 * 4) as usize);
     }
 
     #[test]
     fn renders_right_half_at_correct_dimensions() {
         let doc = Document::open(fixture()).unwrap();
         let bmp = doc.render(0, Half::Right, 1.0).unwrap();
-        assert_eq!((bmp.width, bmp.height), (360, 405));
-        assert_eq!(bmp.rgba.len(), (360 * 405 * 4) as usize);
+        assert_eq!((bmp.width, bmp.height), (640, 360));
+        assert_eq!(bmp.rgba.len(), (640 * 360 * 4) as usize);
     }
 
     #[test]
     fn renders_full_page_at_scale() {
         let doc = Document::open(fixture()).unwrap();
         let bmp = doc.render(0, Half::Full, 2.0).unwrap();
-        assert_eq!((bmp.width, bmp.height), (1440, 810));
-        assert_eq!(bmp.rgba.len(), (1440 * 810 * 4) as usize);
+        assert_eq!((bmp.width, bmp.height), (2560, 720));
+        assert_eq!(bmp.rgba.len(), (2560 * 720 * 4) as usize);
     }
 
     #[test]

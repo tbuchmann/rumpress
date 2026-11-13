@@ -229,7 +229,7 @@ mod tests {
         h.request(PageKey { page: 0, half: Half::Left }, 1.0);
         let (key, bmp) = wait_for(|| h.poll());
         assert_eq!(key.page.page, 0);
-        assert_eq!(bmp.width, 360);
+        assert_eq!(bmp.width, 640);
         // second poll: nothing new
         assert!(h.poll().is_none());
     }
@@ -249,7 +249,7 @@ mod tests {
         let h = RenderHandle::spawn(Path::new(TWO_PAGE).into());
         let info = wait_for(|| h.take_document_info());
         assert_eq!(info.page_count, 2);
-        assert_eq!(info.page_size, (720.0, 405.0));
+        assert_eq!(info.page_size, (1280.0, 360.0));
         assert_eq!(info.labels, vec!["1".to_string(), "2".to_string()]);
     }
 
@@ -318,7 +318,7 @@ mod tests {
         let info = wait_for(|| h.take_document_info().filter(|i| i.page_count == 1));
         assert_eq!(info.page_count, 1);
         // Page 0 of the new document is 612x792, so a fresh render differs
-        // from the cached 720x405 one — proving the cache was cleared.
+        // from the cached 1280x360 one — proving the cache was cleared.
         h.request(key, 1.0);
         let (_, bmp) = wait_for(|| h.poll());
         assert_eq!(bmp.width, 612);
