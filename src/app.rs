@@ -60,6 +60,8 @@ pub struct RumpressApp {
     overview_visible: bool,
     /// Whether dragging on the presenter's slide draws highlight strokes.
     highlight_mode: bool,
+    /// Whether the help overlay is shown in the presenter window.
+    help_visible: bool,
     /// Freehand highlight strokes for the current page, in normalized
     /// 0..1 slide coordinates. Cleared when the page changes.
     strokes: Strokes,
@@ -120,6 +122,7 @@ impl RumpressApp {
             layout,
             overview_visible: false,
             highlight_mode: false,
+            help_visible: false,
             strokes: Strokes::default(),
             last_page: 0,
             pending_actions: RefCell::new(Vec::new()),
@@ -261,6 +264,8 @@ impl RumpressApp {
                 Action::ToggleOverview => self.overview_visible = !self.overview_visible,
                 // Highlight mode likewise lives in the app layer.
                 Action::ToggleHighlight => self.highlight_mode = !self.highlight_mode,
+                // Help overlay likewise lives in the app layer.
+                Action::ToggleHelp => self.help_visible = !self.help_visible,
                 _ => quit |= input::apply(&mut self.state, action, &mut self.timer),
             }
         }
@@ -385,6 +390,10 @@ impl RumpressApp {
                 self.draw_overview(ui);
             }
         });
+
+        if self.help_visible {
+            draw_help(ctx);
+        }
     }
 
     /// Full-panel overview grid: one thumbnail per logical slide; clicking a
@@ -509,6 +518,48 @@ impl RumpressApp {
         self.pending_actions.borrow_mut().extend(actions);
     }
 }
+
+/// The `?` help overlay: a centered panel over the presenter viewport
+/// listing every keybinding. Toggled with `?`; other keys still work
+/// underneath, so the overlay is purely informational.
+fn draw_help(ctx: &Context) {
+    egui::Area::new(egui::Id::new("help-overlay"))
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::default()
+                .fill(Color32::from_black_alpha(230))
+                .inner_margin(16.0)
+                .stroke((1.0, Color32::GRAY))
+                .show(ui, |ui| {
+                    ui.set_max_width(420.0);
+                    ui.heading("Keybindings");
+                    ui.add_space(8.0);
+                    for (key, action) in BINDINGS {
+                        ui.horizontal(|ui| {
+                            ui.monospace(*key);
+                            ui.label(*action);
+                        });
+                    }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Press ? to close").color(Color32::GRAY).small());
+                });
+        });
+}
+
+/// The keybinding table shown by the help overlay: `(key, action)` pairs.
+const BINDINGS: &[(&str, &str)] = &[
+    ("Right / Space / PageDown", "next page (overlay step)"),
+    ("Left / PageUp", "previous page"),
+    ("Down", "next slide"),
+    ("Up", "previous slide"),
+    ("b", "blank / unblank the beamer"),
+    ("g", "toggle overview grid"),
+    ("h", "toggle highlight pen"),
+    ("t", "reset timer"),
+    ("?", "toggle this help"),
+    ("q", "quit"),
+];
 
 impl eframe::App for RumpressApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {

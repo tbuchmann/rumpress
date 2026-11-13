@@ -15,6 +15,11 @@ use crate::timer::Timer;
 pub fn run(args: Args) -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
+    // Fail fast with a clear message before any window or render thread
+    // exists: a missing or unreadable file would otherwise only surface as
+    // a vague "render thread did not report document info" after a 5 s wait.
+    check_pdf_readable(&args.pdf)?;
+
     let render = RenderHandle::spawn(args.pdf.clone());
 
     // The render thread emits DocumentInfo right after opening; wait for it
@@ -90,4 +95,46 @@ fn wait_for_document_info(render: &RenderHandle) -> Option<crate::render::Docume
         std::thread::sleep(Duration::from_millis(10));
     }
     None
+}
+
+/// Verifies the PDF path exists and is a readable file, returning a
+/// user-facing error otherwise. Called before the render thread starts so a
+/// bad path fails immediately with a message naming the path.
+fn check_pdf_readable(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(()),
+        Ok(meta) if meta.is_dir() => Err(format!(
+            "'{}' is a directory, not a PDF file",
+            path.display()
+        )
+        .into()),
+        Ok(_) => Err(format!("'{}' is not a regular file", path.display()).into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("file not found: '{}'", path.display()).into())
+        }
+        Err(e) => Err(format!("cannot read '{}': {e}", path.display()).into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_gives_clear_error() {
+        let err = check_pdf_readable(std::path::Path::new("no/such/deck.pdf")).unwrap_err();
+        assert!(err.to_string().contains("file not found"), "msg: {err}");
+        assert!(err.to_string().contains("no/such/deck.pdf"), "msg: {err}");
+    }
+
+    #[test]
+    fn directory_gives_clear_error() {
+        let err = check_pdf_readable(std::path::Path::new("tests/fixtures")).unwrap_err();
+        assert!(err.to_string().contains("is a directory"), "msg: {err}");
+    }
+
+    #[test]
+    fn existing_file_passes() {
+        check_pdf_readable(std::path::Path::new("tests/fixtures/two-page.pdf")).unwrap();
+    }
 }
