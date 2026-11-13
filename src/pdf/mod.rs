@@ -2,4 +2,6 @@
 
 mod document;
 
-// (re-exported for downstream use; silence unused warning in bin crate)
+// Re-exported for downstream use (later tasks); unused in the bin crate for now.
+#[allow(unused_imports)]
+pub use document::{Bitmap, Document, Error, Half};

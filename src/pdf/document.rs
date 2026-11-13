@@ -46,25 +46,30 @@ pub enum Error {
 
     #[error("pdfium error: {0}")]
     Pdfium(#[from] PdfiumError),
+
+    #[error("render target too large: {width}x{height} (scale too large?)")]
+    RenderTargetTooLarge { width: u32, height: u32 },
 }
 
 /// A Pdfium-backed PDF document.
 pub struct Document {
+    // `ManuallyDrop` prevents the compiler's automatic field drop, so the
+    // manual `Drop` impl controls the order: it drops the inner document
+    // via `ManuallyDrop::drop`, then `_pdfium` (the Pdfium bindings the
+    // document borrows) drops automatically afterwards.
     document: ManuallyDrop<PdfDocument<'static>>,
-    // `pdfium` must be dropped AFTER `document`. The manual `Drop` impl
-    // drops `document` first; `_pdfium` then drops automatically.
     _pdfium: Pin<Box<Pdfium>>,
     page_count: u16,
 }
 
 impl Drop for Document {
     fn drop(&mut self) {
-        // Drop the document before the Pdfium bindings it borrows.
-        // SAFETY: `document` is not moved out; we only drop it in place.
-        // After this manual drop, `document` must NOT be dropped again by
-        // the compiler's field drops — `ManuallyDrop` prevents that.
-        unsafe { std::ptr::drop_in_place(&mut self.document as *mut ManuallyDrop<PdfDocument<'static>>) };
-        // `_pdfium` drops automatically after this, in the correct order.
+        // Drop the document in place before the Pdfium bindings it borrows.
+        // SAFETY: `document` has not been dropped or moved out (ManuallyDrop
+        // guarantees the compiler will not drop it again), so dropping it
+        // exactly once here is sound. `_pdfium` drops automatically after
+        // this, in the correct order.
+        unsafe { ManuallyDrop::drop(&mut self.document) };
     }
 }
 
@@ -84,7 +89,8 @@ impl Document {
         // struct, so the self-referential `document` always points at a live
         // `Pdfium`. `PdfDocument<'static>` is sound because the `Pdfium`
         // outlives the document: the manual `Drop` impl drops the document
-        // first, and the pinned `Pdfium` is only dropped afterwards.
+        // (via `ManuallyDrop::drop`) first, and the pinned `Pdfium` is only
+        // dropped afterwards.
         let document = unsafe {
             std::mem::transmute::<PdfDocument<'_>, PdfDocument<'static>>(
                 pdfium.load_pdf_from_file(path, None).map_err(Error::from)?,
@@ -168,13 +174,18 @@ impl Document {
         let full_h = (page_h * scale).round().max(1.0) as u32;
 
         let pdf_page = self.document.pages().get(page as PdfPageIndex)?;
+        // Guard against absurd scale values overflowing the i32 target size.
+        let max_dim = i32::MAX as u32;
+        if full_w > max_dim || full_h > max_dim {
+            return Err(Error::RenderTargetTooLarge {
+                width: full_w,
+                height: full_h,
+            });
+        }
         let rendered = pdf_page
             .render_with_config(
                 &PdfRenderConfig::new()
-                    .set_target_size(
-                        full_w.try_into().expect("width fits in i32"),
-                        full_h.try_into().expect("height fits in i32"),
-                    )
+                    .set_target_size(full_w as i32, full_h as i32)
                     .set_clear_color(PdfColor::new(255, 255, 255, 255)),
             )
             .map_err(Error::from)?;
@@ -269,6 +280,15 @@ mod tests {
         assert!(doc.page_size(2).is_err());
         assert!(doc.page_label(2).is_err());
         assert!(doc.render(2, Half::Full, 1.0).is_err());
+    }
+
+    #[test]
+    fn absurd_scale_gives_error_not_panic() {
+        let doc = Document::open(fixture()).unwrap();
+        // A scale so large the target size overflows i32 must return an
+        // error, not panic.
+        let result = doc.render(0, Half::Full, 1e9);
+        assert!(matches!(result, Err(Error::RenderTargetTooLarge { .. })));
     }
 
     #[test]
