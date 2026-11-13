@@ -6,6 +6,7 @@ mod cli;
 mod pdf;
 mod render;
 mod run;
+mod state;
 
 fn main() {
     if let Err(e) = actual_main() {
