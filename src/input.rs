@@ -20,6 +20,13 @@ pub enum Action {
     ToggleHighlight,
     ToggleHelp,
     ResetTimer,
+    /// A digit 0-9: appends to the "go to slide" number being typed.
+    /// Applied in the app layer.
+    Digit(u8),
+    /// Backspace: deletes the last typed digit. Applied in the app layer.
+    Backspace,
+    /// Enter: jumps to the typed slide number. Applied in the app layer.
+    Confirm,
     /// Esc: closes whichever overlay mode is active (overview, highlight
     /// pen, help); a no-op in normal mode. Applied in the app layer.
     Escape,
@@ -34,7 +41,8 @@ pub enum Action {
 /// Bindings: Right/Space/PageDown = NextPage, Left/PageUp = PrevPage,
 /// Down = NextSlide, Up = PrevSlide, `b` = ToggleBlank, `g` = ToggleOverview,
 /// `h` = ToggleHighlight, `?` = ToggleHelp, `t` = ResetTimer, `q` = Quit,
-/// Esc = Escape (closes the active overlay; no-op in normal mode).
+/// Esc = Escape (closes the active overlay; no-op in normal mode),
+/// `0`-`9` + Enter = go to slide (Backspace edits the number, Esc cancels).
 pub fn map_key(key: egui::Key, _modifiers: egui::Modifiers) -> Action {
     match key {
         egui::Key::ArrowRight | egui::Key::Space | egui::Key::PageDown => Action::NextPage,
@@ -48,6 +56,18 @@ pub fn map_key(key: egui::Key, _modifiers: egui::Modifiers) -> Action {
         egui::Key::T => Action::ResetTimer,
         egui::Key::Q => Action::Quit,
         egui::Key::Escape => Action::Escape,
+        egui::Key::Enter => Action::Confirm,
+        egui::Key::Backspace => Action::Backspace,
+        egui::Key::Num0 => Action::Digit(0),
+        egui::Key::Num1 => Action::Digit(1),
+        egui::Key::Num2 => Action::Digit(2),
+        egui::Key::Num3 => Action::Digit(3),
+        egui::Key::Num4 => Action::Digit(4),
+        egui::Key::Num5 => Action::Digit(5),
+        egui::Key::Num6 => Action::Digit(6),
+        egui::Key::Num7 => Action::Digit(7),
+        egui::Key::Num8 => Action::Digit(8),
+        egui::Key::Num9 => Action::Digit(9),
         _ => Action::None,
     }
 }
@@ -71,7 +91,13 @@ pub fn apply(state: &mut DeckState, action: Action, timer: &mut Timer) -> bool {
         Action::ResetTimer => timer.reset(Instant::now()),
         // Overview/highlight/help/escape state lives in the app layer; these
         // are applied there and do not quit.
-        Action::ToggleOverview | Action::ToggleHighlight | Action::ToggleHelp | Action::Escape => {}
+        Action::ToggleOverview
+        | Action::ToggleHighlight
+        | Action::ToggleHelp
+        | Action::Escape
+        | Action::Digit(_)
+        | Action::Backspace
+        | Action::Confirm => {}
         Action::Quit => return true,
         Action::None => {}
     }
@@ -126,7 +152,11 @@ mod tests {
         assert_eq!(map_key(egui::Key::T, m), Action::ResetTimer);
         assert_eq!(map_key(egui::Key::Q, m), Action::Quit);
         assert_eq!(map_key(egui::Key::A, m), Action::None);
-        assert_eq!(map_key(egui::Key::Enter, m), Action::None);
+        assert_eq!(map_key(egui::Key::Enter, m), Action::Confirm);
+        assert_eq!(map_key(egui::Key::Backspace, m), Action::Backspace);
+        assert_eq!(map_key(egui::Key::Num0, m), Action::Digit(0));
+        assert_eq!(map_key(egui::Key::Num7, m), Action::Digit(7));
+        assert_eq!(map_key(egui::Key::Num9, m), Action::Digit(9));
     }
 
     #[test]

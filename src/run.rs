@@ -105,11 +105,9 @@ fn wait_for_document_info(render: &RenderHandle) -> Option<crate::render::Docume
 fn check_pdf_readable(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => Ok(()),
-        Ok(meta) if meta.is_dir() => Err(format!(
-            "'{}' is a directory, not a PDF file",
-            path.display()
-        )
-        .into()),
+        Ok(meta) if meta.is_dir() => {
+            Err(format!("'{}' is a directory, not a PDF file", path.display()).into())
+        }
         Ok(_) => Err(format!("'{}' is not a regular file", path.display()).into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Err(format!("file not found: '{}'", path.display()).into())

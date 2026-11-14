@@ -111,7 +111,12 @@ impl RenderHandle {
     /// so callers that evicted the texture can get it back.
     pub fn request(&self, key: PageKey, scale: f32) {
         let rkey = RenderKey::new(key, scale);
-        if !self.in_flight.lock().unwrap_or_else(|e| e.into_inner()).insert(rkey) {
+        if !self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(rkey)
+        {
             return;
         }
         let _ = self.tx.send(Request::Render(key, scale));
@@ -119,7 +124,10 @@ impl RenderHandle {
 
     /// Replaces the document, clearing the cache. Emits new [`DocumentInfo`].
     pub fn reload(&self, path: PathBuf) {
-        self.in_flight.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         let _ = self.tx.send(Request::Reload(path));
     }
 

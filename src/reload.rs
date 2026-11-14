@@ -156,8 +156,7 @@ mod tests {
 
     #[test]
     fn write_inside_debounce_window_is_deferred_not_dropped() {
-        let dir = std::env::temp_dir()
-            .join(format!("rumpress-test-defer-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rumpress-test-defer-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("deck.pdf");
         std::fs::write(&file, b"one").unwrap();
@@ -181,8 +180,7 @@ mod tests {
 
     #[test]
     fn reading_the_file_is_not_a_change() {
-        let dir = std::env::temp_dir()
-            .join(format!("rumpress-test-read-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rumpress-test-read-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("deck.pdf");
         std::fs::write(&file, b"one").unwrap();

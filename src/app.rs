@@ -58,6 +58,8 @@ pub struct RumpressApp {
     layout: PageLayout,
     /// Whether the overview grid is shown in the presenter window.
     overview_visible: bool,
+    /// Digits typed so far for "go to slide" (confirmed with Enter).
+    goto_input: String,
     /// Whether dragging on the presenter's slide draws highlight strokes.
     highlight_mode: bool,
     /// Whether the help overlay is shown in the presenter window.
@@ -121,6 +123,7 @@ impl RumpressApp {
             swap_halves,
             layout,
             overview_visible: false,
+            goto_input: String::new(),
             highlight_mode: false,
             help_visible: false,
             strokes: Strokes::default(),
@@ -281,13 +284,34 @@ impl RumpressApp {
                 // Esc closes whichever overlay mode is active (overview,
                 // highlight pen, help); in normal mode it does nothing.
                 Action::Escape => {
-                    if self.overview_visible {
+                    if !self.goto_input.is_empty() {
+                        self.goto_input.clear();
+                    } else if self.overview_visible {
                         self.overview_visible = false;
                     } else if self.highlight_mode {
                         self.highlight_mode = false;
                     } else {
                         self.help_visible = false;
                     }
+                }
+                // "Go to slide": type the 1-based number, then Enter.
+                Action::Digit(d) => {
+                    // Four digits is more than any deck has slides.
+                    if self.goto_input.len() < 4 {
+                        self.goto_input.push(char::from(b'0' + d));
+                    }
+                }
+                Action::Backspace => {
+                    self.goto_input.pop();
+                }
+                Action::Confirm => {
+                    if let Ok(n) = self.goto_input.parse::<usize>()
+                        && n >= 1
+                    {
+                        // Out-of-range numbers clamp to the last slide.
+                        self.state.goto_slide(n - 1);
+                    }
+                    self.goto_input.clear();
                 }
                 _ => quit |= input::apply(&mut self.state, action, &mut self.timer),
             }
@@ -410,11 +434,22 @@ impl RumpressApp {
                         .color(Color32::YELLOW),
                 );
             }
-            ui.label(format!(
-                "Slide {} / {}",
-                self.state.current_slide + 1,
-                self.slides.slide_count()
-            ));
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Slide {} / {}",
+                    self.state.current_slide + 1,
+                    self.slides.slide_count()
+                ));
+                if !self.goto_input.is_empty() {
+                    ui.label(
+                        RichText::new(format!(
+                            "Go to slide: {}\u{258f}  (Enter = go, Esc = cancel)",
+                            self.goto_input
+                        ))
+                        .color(Color32::LIGHT_BLUE),
+                    );
+                }
+            });
             self.draw_current_slide(ui);
 
             if self.overview_visible {
@@ -578,7 +613,11 @@ fn draw_help(ctx: &Context) {
                         });
                     }
                     ui.add_space(4.0);
-                    ui.label(RichText::new("Press ? to close").color(Color32::GRAY).small());
+                    ui.label(
+                        RichText::new("Press ? to close")
+                            .color(Color32::GRAY)
+                            .small(),
+                    );
                 });
         });
 }
@@ -591,10 +630,14 @@ const BINDINGS: &[(&str, &str)] = &[
     ("Up", "previous slide"),
     ("b", "blank / unblank the beamer"),
     ("g", "toggle overview grid"),
+    ("0-9, Enter", "type a slide number, Enter = go to it"),
     ("h", "toggle highlight pen"),
     ("t", "reset timer"),
     ("?", "toggle this help"),
-    ("Esc", "close overview / highlight / help"),
+    (
+        "Esc",
+        "cancel typed number / close overview / highlight / help",
+    ),
     ("q", "quit"),
 ];
 
