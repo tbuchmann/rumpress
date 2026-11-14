@@ -32,7 +32,8 @@ pub enum Error {
     /// The Pdfium dynamic library could not be loaded.
     #[error(
         "Pdfium library not found; install libpdfium.so and point RUMPRESS_PDFIUM_PATH \
-         at it, or run scripts/fetch-pdfium.sh to download libpdfium.so into \
+         at it, place it next to the rumpress executable, or run \
+         scripts/fetch-pdfium.sh to download libpdfium.so into \
          vendor/pdfium/ (underlying error: {source:?})"
     )]
     PdfiumUnavailable {
@@ -48,6 +49,19 @@ pub enum Error {
 
     #[error("render target too large: {width}x{height} (scale too large?)")]
     RenderTargetTooLarge { width: u32, height: u32 },
+}
+
+/// Where a `libpdfium.so` shipped alongside the executable would be, in
+/// lookup order: next to the binary, then in a `lib/` folder beside it.
+/// Empty if the executable's directory is unknown.
+fn bundled_library_candidates(exe_dir: Option<&Path>) -> Vec<PathBuf> {
+    let Some(dir) = exe_dir else {
+        return Vec::new();
+    };
+    vec![
+        dir.join("libpdfium.so"),
+        dir.join("lib").join("libpdfium.so"),
+    ]
 }
 
 /// A Pdfium-backed PDF document.
@@ -136,6 +150,15 @@ impl Document {
 
         if let Ok(env_path) = std::env::var("RUMPRESS_PDFIUM_PATH") {
             let path = PathBuf::from(env_path);
+            attempts.push(Box::new(move || Pdfium::bind_to_library(path)));
+        }
+
+        // A library shipped with the binary (release tarball) wins over any
+        // system-wide one, so the bundled version is the one we were tested with.
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        for path in bundled_library_candidates(exe_dir.as_deref()) {
             attempts.push(Box::new(move || Pdfium::bind_to_library(path)));
         }
 
@@ -321,5 +344,18 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("libpdfium.so"), "message: {msg}");
         assert!(msg.contains("scripts/fetch-pdfium.sh"), "message: {msg}");
+    }
+
+    #[test]
+    fn bundled_library_is_looked_up_next_to_the_executable() {
+        let c = bundled_library_candidates(Some(Path::new("/opt/rumpress")));
+        assert_eq!(
+            c,
+            vec![
+                PathBuf::from("/opt/rumpress/libpdfium.so"),
+                PathBuf::from("/opt/rumpress/lib/libpdfium.so"),
+            ]
+        );
+        assert!(bundled_library_candidates(None).is_empty());
     }
 }

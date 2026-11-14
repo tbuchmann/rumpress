@@ -23,11 +23,50 @@ via the `pdfium-render` crate, which needs `libpdfium.so` at runtime. Either:
 - install a distribution package (e.g. AUR `pdfium` / `libpdfium`) that puts
   `libpdfium.so` on the loader path.
 
+rumpress looks for `libpdfium.so` in this order: `RUMPRESS_PDFIUM_PATH`, next to
+the executable (`./libpdfium.so`, then `./lib/libpdfium.so`), the system library
+path, and finally `vendor/pdfium/libpdfium.so` relative to the current directory.
+
 To point at a specific library, set:
 
 ```sh
 export RUMPRESS_PDFIUM_PATH=/path/to/libpdfium.so
 ```
+
+## Installing from a release
+
+Download `rumpress-<version>-x86_64-linux.tar.gz` from the
+[Releases](../../releases) page, check it against the `.sha256` file, and unpack:
+
+```sh
+sha256sum -c rumpress-<version>-x86_64-linux.tar.gz.sha256
+tar -xzf rumpress-<version>-x86_64-linux.tar.gz
+./rumpress-<version>-x86_64-linux/rumpress deck.pdf
+```
+
+The tarball contains the binary and the Pdfium library it needs, side by side,
+so no further setup is required beyond a Wayland desktop. Pdfium's own license
+files are in `third-party/pdfium/`.
+
+## Making a release
+
+`scripts/package-release.sh` builds the optimized binary (link-time
+optimization and stripped symbols, see `[profile.release]` in `Cargo.toml`),
+fetches Pdfium, and writes `dist/rumpress-<version>-x86_64-linux.tar.gz` plus its
+`.sha256`. It works on Linux x86_64 only.
+
+Releases are automated: set the version in `Cargo.toml`, then push a matching tag.
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `release` workflow (`.github/workflows/release.yml`) runs the tests, builds
+on Ubuntu 22.04 (an older glibc, so the binary runs on most current distros),
+and publishes a GitHub Release with the tarball. It refuses to run if the tag
+and the `Cargo.toml` version disagree. Run it manually from the Actions tab
+for a dry run that only uploads the tarball as a build artifact.
 
 ## Usage
 

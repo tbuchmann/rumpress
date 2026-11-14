@@ -15,3 +15,11 @@ notify = "8"
 pdfium-render = { version = "0.8", default-features = false, features = ["pdfium_latest", "thread_safe"] }
 serde_json = "1"
 thiserror = "2"
+
+# Smaller, faster release binaries for distribution (at the cost of a longer
+# release build): link-time optimization across all crates, a single codegen
+# unit, and stripped symbols.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
