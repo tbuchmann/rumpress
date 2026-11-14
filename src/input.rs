@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use crate::state::DeckState;
 use crate::timer::Timer;
+use crate::ui::annotate::Tool;
 
 /// A presenter command, produced by [`map_key`] and executed by [`apply`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +18,17 @@ pub enum Action {
     PrevSlide,
     ToggleBlank,
     ToggleOverview,
-    ToggleHighlight,
+    /// Selects an annotation tool; selecting the active tool again turns
+    /// annotating off. Applied in the app layer.
+    SelectTool(Tool),
+    /// Next color for the active tool. Applied in the app layer.
+    CycleColor,
+    /// Next stroke width. Applied in the app layer.
+    CycleWidth,
+    /// Removes the latest annotation on the current page.
+    Undo,
+    /// Removes all annotations on the current page.
+    ClearAnnotations,
     ToggleHelp,
     ResetTimer,
     /// A digit 0-9: appends to the "go to slide" number being typed.
@@ -40,18 +51,34 @@ pub enum Action {
 ///
 /// Bindings: Right/Space/PageDown = NextPage, Left/PageUp = PrevPage,
 /// Down = NextSlide, Up = PrevSlide, `b` = ToggleBlank, `g` = ToggleOverview,
-/// `h` = ToggleHighlight, `?` = ToggleHelp, `t` = ResetTimer, `q` = Quit,
-/// Esc = Escape (closes the active overlay; no-op in normal mode),
+/// `?` = ToggleHelp, `t` = ResetTimer, `q` = Quit,
+/// Esc = Escape (closes the active overlay or tool; no-op in normal mode),
+/// annotation tools `l` laser, `p` pen, `h` marker, `f` area, `n` line,
+/// `a` arrow, `r` box, `o` oval, `e` eraser; `c` color, `w` width,
+/// `u` / Ctrl+Z undo, `x` clear,
 /// `0`-`9` + Enter = go to slide (Backspace edits the number, Esc cancels).
-pub fn map_key(key: egui::Key, _modifiers: egui::Modifiers) -> Action {
+pub fn map_key(key: egui::Key, modifiers: egui::Modifiers) -> Action {
     match key {
+        egui::Key::Z if modifiers.command => Action::Undo,
         egui::Key::ArrowRight | egui::Key::Space | egui::Key::PageDown => Action::NextPage,
         egui::Key::ArrowLeft | egui::Key::PageUp => Action::PrevPage,
         egui::Key::ArrowDown => Action::NextSlide,
         egui::Key::ArrowUp => Action::PrevSlide,
         egui::Key::B => Action::ToggleBlank,
         egui::Key::G => Action::ToggleOverview,
-        egui::Key::H => Action::ToggleHighlight,
+        egui::Key::L => Action::SelectTool(Tool::Laser),
+        egui::Key::P => Action::SelectTool(Tool::Pen),
+        egui::Key::H => Action::SelectTool(Tool::Highlighter),
+        egui::Key::F => Action::SelectTool(Tool::Area),
+        egui::Key::N => Action::SelectTool(Tool::Line),
+        egui::Key::A => Action::SelectTool(Tool::Arrow),
+        egui::Key::R => Action::SelectTool(Tool::Rect),
+        egui::Key::O => Action::SelectTool(Tool::Ellipse),
+        egui::Key::E => Action::SelectTool(Tool::Eraser),
+        egui::Key::C => Action::CycleColor,
+        egui::Key::W => Action::CycleWidth,
+        egui::Key::U => Action::Undo,
+        egui::Key::X => Action::ClearAnnotations,
         egui::Key::Questionmark => Action::ToggleHelp,
         egui::Key::T => Action::ResetTimer,
         egui::Key::Q => Action::Quit,
@@ -92,7 +119,11 @@ pub fn apply(state: &mut DeckState, action: Action, timer: &mut Timer) -> bool {
         // Overview/highlight/help/escape state lives in the app layer; these
         // are applied there and do not quit.
         Action::ToggleOverview
-        | Action::ToggleHighlight
+        | Action::SelectTool(_)
+        | Action::CycleColor
+        | Action::CycleWidth
+        | Action::Undo
+        | Action::ClearAnnotations
         | Action::ToggleHelp
         | Action::Escape
         | Action::Digit(_)
@@ -147,11 +178,14 @@ mod tests {
         assert_eq!(map_key(egui::Key::PageUp, m), Action::PrevPage);
         assert_eq!(map_key(egui::Key::ArrowUp, m), Action::PrevSlide);
         assert_eq!(map_key(egui::Key::G, m), Action::ToggleOverview);
-        assert_eq!(map_key(egui::Key::H, m), Action::ToggleHighlight);
+        assert_eq!(
+            map_key(egui::Key::H, m),
+            Action::SelectTool(Tool::Highlighter)
+        );
         assert_eq!(map_key(egui::Key::Questionmark, m), Action::ToggleHelp);
         assert_eq!(map_key(egui::Key::T, m), Action::ResetTimer);
         assert_eq!(map_key(egui::Key::Q, m), Action::Quit);
-        assert_eq!(map_key(egui::Key::A, m), Action::None);
+        assert_eq!(map_key(egui::Key::J, m), Action::None);
         assert_eq!(map_key(egui::Key::Enter, m), Action::Confirm);
         assert_eq!(map_key(egui::Key::Backspace, m), Action::Backspace);
         assert_eq!(map_key(egui::Key::Num0, m), Action::Digit(0));
@@ -184,7 +218,7 @@ mod tests {
         let mut s = DeckState::new(SlideIndex::from_labels(&["1", "2"].map(String::from)));
         let mut t = Timer::new(None);
         assert!(!apply(&mut s, Action::ToggleOverview, &mut t));
-        assert!(!apply(&mut s, Action::ToggleHighlight, &mut t));
+        assert!(!apply(&mut s, Action::SelectTool(Tool::Pen), &mut t));
         assert!(!apply(&mut s, Action::ToggleHelp, &mut t));
         assert_eq!((s.current_page, s.current_slide, s.blanked), (0, 0, false));
     }
@@ -209,5 +243,44 @@ mod tests {
         let mut t = Timer::new(None);
         assert!(!apply(&mut s, Action::None, &mut t));
         assert_eq!((s.current_page, s.current_slide, s.blanked), (0, 0, false));
+    }
+
+    #[test]
+    fn every_tool_has_a_key_that_maps_back_to_it() {
+        let keys = [
+            (egui::Key::L, Tool::Laser),
+            (egui::Key::P, Tool::Pen),
+            (egui::Key::H, Tool::Highlighter),
+            (egui::Key::F, Tool::Area),
+            (egui::Key::N, Tool::Line),
+            (egui::Key::A, Tool::Arrow),
+            (egui::Key::R, Tool::Rect),
+            (egui::Key::O, Tool::Ellipse),
+            (egui::Key::E, Tool::Eraser),
+        ];
+        assert_eq!(keys.len(), Tool::ALL.len());
+        for (key, tool) in keys {
+            assert_eq!(map_key(key, Default::default()), Action::SelectTool(tool));
+            assert_eq!(
+                key.name().chars().next(),
+                Some(tool.key_hint()),
+                "hint for {tool:?} does not match its key"
+            );
+        }
+    }
+
+    #[test]
+    fn annotation_edit_keys() {
+        let m = egui::Modifiers::default();
+        assert_eq!(map_key(egui::Key::C, m), Action::CycleColor);
+        assert_eq!(map_key(egui::Key::W, m), Action::CycleWidth);
+        assert_eq!(map_key(egui::Key::U, m), Action::Undo);
+        assert_eq!(map_key(egui::Key::X, m), Action::ClearAnnotations);
+        // Ctrl+Z undoes too; a bare Z does nothing.
+        assert_eq!(
+            map_key(egui::Key::Z, egui::Modifiers::COMMAND),
+            Action::Undo
+        );
+        assert_eq!(map_key(egui::Key::Z, m), Action::None);
     }
 }

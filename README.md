@@ -44,6 +44,26 @@ rumpress deck.pdf --present-monitor 1 --presenter-monitor 0
 - `--present-monitor` / `--presenter-monitor` choose the outputs (Hyprland
   monitor indices). Without them rumpress picks automatically.
 
+## Presenter window
+
+The presenter window opens at 1600×900 and is laid out for reading at a glance:
+
+- **Current slide** large on the left, with a "Slide n / N" counter.
+- **Next-page preview** on the right, with the **notes** below it when the deck
+  has notes pages (see [Deck format](#deck-format)).
+- **Annotation toolbar** above the slide (see [Annotation tools](#annotation-tools)).
+- **Timer bar** pinned to the bottom: elapsed time, wall clock, and — with
+  `--time` — the pace indicator and a time progress bar (`Time: 02:24 / 20:00`).
+  A second bar always shows slide progress (`Slide 5 / 12 — 7 remaining`); it
+  counts logical slides, so overlay steps of one slide do not advance it.
+
+### Jumping to a slide
+
+Type the slide number and press `Enter` — for example `1` `2` `Enter` goes to
+slide 12. The typed number appears next to the slide counter. `Backspace`
+deletes a digit and `Esc` cancels. A number past the end goes to the last
+slide. (The overview grid, `g`, lets you click a thumbnail instead.)
+
 ## Monitor placement
 
 On Hyprland, rumpress asks `hyprctl` for the connected outputs and writes
@@ -78,21 +98,54 @@ With only one monitor, rumpress opens just the presenter window.
 
 ## Keybindings
 
-| Key                        | Action                          |
-| -------------------------- | ------------------------------- |
-| `Right` / `Space` / `PgDn` | next page (overlay step)        |
-| `Left` / `PgUp`            | previous page                   |
-| `Down`                     | next slide (skips overlays)     |
-| `Up`                       | previous slide                  |
-| `b`                        | blank / unblank the beamer      |
-| `g`                        | toggle overview grid            |
-| `h`                        | toggle highlight pen            |
-| `t`                        | reset timer                     |
-| `?`                        | toggle help overlay             |
-| `Esc`                      | close overview / highlight / help |
-| `q`                        | quit                            |
+| Key                        | Action                                        |
+| -------------------------- | --------------------------------------------- |
+| `Right` / `Space` / `PgDn` | next page (overlay step)                      |
+| `Left` / `PgUp`            | previous page                                 |
+| `Down`                     | next slide (skips overlays)                   |
+| `Up`                       | previous slide                                |
+| `0`–`9`, `Enter`           | type a slide number, `Enter` jumps to it      |
+| `b`                        | blank / unblank the beamer                    |
+| `g`                        | toggle overview grid                          |
+| `t`                        | reset timer                                   |
+| `?`                        | toggle help overlay                           |
+| `Esc`                      | cancel typed number / close overview / switch off the annotation tool / close help |
+| `q`                        | quit                                          |
 
-Press `?` in the presenter window to see this list in the app.
+Annotation keys are listed under [Annotation tools](#annotation-tools).
+Press `?` in the presenter window to see the full list in the app.
+
+## Annotation tools
+
+Draw on the current slide from the presenter window; everything appears on the
+beamer as you draw. Pick a tool with its key or from the toolbar above the
+slide; pressing the active tool's key again (or `Esc`) goes back to normal
+navigation.
+
+| Key | Tool    | What it does                                            |
+| --- | ------- | ------------------------------------------------------- |
+| `l` | Laser   | glowing dot with a short fading tail that follows the mouse over the slide, on both screens; leaves nothing behind |
+| `p` | Pen     | freehand drawing                                        |
+| `h` | Marker  | wide, translucent freehand highlighter                  |
+| `f` | Area    | drag a filled, translucent rectangle to mark a region   |
+| `n` | Line    | drag a straight line                                    |
+| `a` | Arrow   | drag an arrow                                           |
+| `r` | Box     | drag a rectangle outline                                |
+| `o` | Oval    | drag an ellipse outline                                 |
+| `e` | Eraser  | drag over annotations to remove them                    |
+
+| Key             | Action                                   |
+| --------------- | ---------------------------------------- |
+| `c`             | next color (each tool has its own palette) |
+| `w`             | next width (S / M / L)                   |
+| `u` / `Ctrl+Z`  | undo the last annotation on this page    |
+| `x`             | clear all annotations on this page       |
+
+The toolbar also has color swatches, width buttons, and Undo / Clear buttons.
+
+Annotations belong to a PDF page, so every overlay step of a slide has its
+own, and they are still there when you come back to the page. They survive a
+live reload of the deck but are not saved when you quit.
 
 ## Deck format
 
@@ -101,7 +154,22 @@ the slide on one half, speaker notes on the other. The slide half goes to
 the beamer, the notes half to the presenter; `--swap-halves` exchanges them.
 
 A PDF that is not 2×1 (aspect ratio below ~1.9) is shown as a full page on
-both screens, with a yellow warning banner on the presenter.
+both screens, with a yellow warning banner on the presenter and no notes.
+
+### Beamer (LaTeX)
+
+Notes written with `\note{...}` only end up in the PDF if you ask beamer to
+render them. Add this to the preamble and recompile:
+
+```latex
+\setbeameroption{show notes on second screen=right}
+```
+
+Each page then becomes two halves side by side (about 3.56:1 for a 16:9 deck),
+the slide on the left and the notes on the right — rumpress's default. With
+`=left`, start rumpress with `--swap-halves`. Long notes may not fit the notes
+half; shrink them with e.g. `\setbeamerfont{note page}{size=\small}`. To also
+get a clean slides-only PDF to share, compile a second copy without the option.
 
 ## Live reload
 
@@ -115,4 +183,7 @@ presentation running; the next successful change reloads normally.
 
 ## Known limitations
 
-None currently documented.
+- Annotations are not saved between runs, and are drawn with the mouse only
+  (no pen-tablet pressure).
+- Monitor placement and fullscreen on a second display depend on Hyprland; on
+  a single monitor only the presenter window opens.

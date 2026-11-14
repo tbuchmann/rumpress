@@ -23,7 +23,7 @@ use crate::reload::{self, ReloadWatcher};
 use crate::render::{DocumentInfo, PageKey, RenderHandle, RenderKey};
 use crate::state::DeckState;
 use crate::timer::{self, Timer};
-use crate::ui::highlight::{self, Strokes};
+use crate::ui::annotate::{self, Annotations, Laser, Style, Tool, WIDTH_LABELS};
 use crate::ui::overview::grid_geometry;
 
 /// Pixels per point used when rendering pages.
@@ -60,13 +60,17 @@ pub struct RumpressApp {
     overview_visible: bool,
     /// Digits typed so far for "go to slide" (confirmed with Enter).
     goto_input: String,
-    /// Whether dragging on the presenter's slide draws highlight strokes.
-    highlight_mode: bool,
+    /// The active annotation tool; `None` = plain navigation.
+    tool: Option<Tool>,
+    /// Color and width choices for the annotation tools.
+    style: Style,
     /// Whether the help overlay is shown in the presenter window.
     help_visible: bool,
-    /// Freehand highlight strokes for the current page, in normalized
-    /// 0..1 slide coordinates. Cleared when the page changes.
-    strokes: Strokes,
+    /// Pen/marker/shape annotations, per page, in normalized 0..1 slide
+    /// coordinates; drawn on both the presenter and the beamer.
+    annotations: Annotations,
+    /// The virtual laser pointer, shown on both windows.
+    laser: Laser,
     /// Page shown at the previous frame, to detect page changes.
     last_page: u16,
     /// Key actions collected from both viewports, applied once per frame.
@@ -124,9 +128,11 @@ impl RumpressApp {
             layout,
             overview_visible: false,
             goto_input: String::new(),
-            highlight_mode: false,
+            tool: None,
+            style: Style::default(),
             help_visible: false,
-            strokes: Strokes::default(),
+            annotations: Annotations::default(),
+            laser: Laser::default(),
             last_page: 0,
             pending_actions: RefCell::new(Vec::new()),
             reload_watcher,
@@ -278,7 +284,17 @@ impl RumpressApp {
                 // Overview visibility lives in the app layer, not DeckState.
                 Action::ToggleOverview => self.overview_visible = !self.overview_visible,
                 // Highlight mode likewise lives in the app layer.
-                Action::ToggleHighlight => self.highlight_mode = !self.highlight_mode,
+                Action::SelectTool(tool) => self.select_tool(tool),
+                Action::CycleColor => {
+                    if let Some(tool) = self.tool {
+                        self.style.cycle_color(tool);
+                    }
+                }
+                Action::CycleWidth => self.style.cycle_width(),
+                Action::Undo => {
+                    self.annotations.undo(self.state.current_page);
+                }
+                Action::ClearAnnotations => self.annotations.clear(self.state.current_page),
                 // Help overlay likewise lives in the app layer.
                 Action::ToggleHelp => self.help_visible = !self.help_visible,
                 // Esc closes whichever overlay mode is active (overview,
@@ -288,8 +304,8 @@ impl RumpressApp {
                         self.goto_input.clear();
                     } else if self.overview_visible {
                         self.overview_visible = false;
-                    } else if self.highlight_mode {
-                        self.highlight_mode = false;
+                    } else if self.tool.is_some() {
+                        self.select_tool_off();
                     } else {
                         self.help_visible = false;
                     }
@@ -373,10 +389,157 @@ impl RumpressApp {
                 let size = tex_size * scale;
                 let rect = Rect::from_center_size(ui.max_rect().center(), size);
                 Image::from_texture(SizedTexture::new(tex.id(), tex_size)).paint_at(ui, rect);
-                // Highlight strokes over the slide, mapped from normalized
-                // coordinates into the on-screen slide rectangle.
-                highlight::draw(ui.painter(), rect, &self.strokes);
+                self.draw_overlay(ui.painter(), rect);
             });
+    }
+
+    /// Selects `tool`; selecting the active tool again turns annotating off.
+    fn select_tool(&mut self, tool: Tool) {
+        if self.tool == Some(tool) {
+            self.select_tool_off();
+        } else {
+            self.annotations.cancel();
+            self.laser.reset();
+            self.tool = Some(tool);
+        }
+    }
+
+    fn select_tool_off(&mut self) {
+        self.tool = None;
+        self.annotations.cancel();
+        self.laser.reset();
+    }
+
+    /// Annotations and laser, drawn over the on-screen slide rectangle
+    /// `rect`. Shared by the presenter and the beamer window.
+    fn draw_overlay(&self, painter: &egui::Painter, rect: Rect) {
+        annotate::draw_page(
+            painter,
+            rect,
+            self.annotations.on_page(self.state.current_page),
+            self.annotations.draft(),
+        );
+        annotate::draw_laser(
+            painter,
+            rect,
+            &self.laser,
+            self.style.color(Tool::Laser),
+            self.style.width(),
+            Instant::now(),
+        );
+    }
+
+    /// Tool buttons, color swatches, width buttons, undo and clear.
+    fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            for tool in Tool::ALL {
+                let selected = self.tool == Some(tool);
+                let response = ui
+                    .selectable_label(selected, tool.label())
+                    .on_hover_text(format!("{} ({})", tool.label(), tool.key_hint()));
+                if response.clicked() {
+                    self.select_tool(tool);
+                }
+            }
+            ui.separator();
+            if let Some(tool) = self.tool {
+                for (i, color) in tool.palette().iter().enumerate() {
+                    let (rect, response) =
+                        ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::click());
+                    ui.painter().rect_filled(rect, 3.0, *color);
+                    if self.style.color_index(tool) == i {
+                        ui.painter().rect_stroke(
+                            rect.expand(1.0),
+                            3.0,
+                            egui::Stroke::new(2.0_f32, Color32::WHITE),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
+                    if response.on_hover_text("Color (c)").clicked() {
+                        self.style.set_color_index(tool, i);
+                    }
+                }
+                if tool != Tool::Eraser {
+                    for (i, label) in WIDTH_LABELS.iter().enumerate() {
+                        if ui
+                            .selectable_label(self.style.width_index() == i, *label)
+                            .on_hover_text("Width (w)")
+                            .clicked()
+                        {
+                            self.style.set_width_index(i);
+                        }
+                    }
+                }
+                ui.separator();
+            }
+            let page = self.state.current_page;
+            if ui
+                .add_enabled(!self.annotations.is_empty(page), egui::Button::new("Undo"))
+                .on_hover_text("Undo (u, Ctrl+Z)")
+                .clicked()
+            {
+                self.annotations.undo(page);
+            }
+            if ui
+                .add_enabled(!self.annotations.is_empty(page), egui::Button::new("Clear"))
+                .on_hover_text("Clear this page (x)")
+                .clicked()
+            {
+                self.annotations.clear(page);
+            }
+        });
+    }
+
+    /// Reacts to the pointer over the presenter's slide rectangle `rect`
+    /// according to the active `tool`: laser position, drawing, erasing.
+    fn handle_slide_pointer(
+        &mut self,
+        ui: &egui::Ui,
+        tool: Tool,
+        response: &egui::Response,
+        rect: Rect,
+    ) {
+        let to_norm = |p: egui::Pos2| {
+            egui::pos2(
+                ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0),
+                ((p.y - rect.top()) / rect.height()).clamp(0.0, 1.0),
+            )
+        };
+        let page = self.state.current_page;
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        match tool {
+            Tool::Laser => match response.hover_pos().or(response.interact_pointer_pos()) {
+                Some(p) => self.laser.point(to_norm(p), Instant::now()),
+                None => self.laser.leave(),
+            },
+            Tool::Eraser => {
+                if (response.dragged() || response.clicked())
+                    && let Some(p) = response.interact_pointer_pos()
+                {
+                    let aspect = rect.width() / rect.height().max(1.0);
+                    self.annotations
+                        .erase_at(page, to_norm(p), ERASER_RADIUS, aspect);
+                }
+            }
+            _ => {
+                let pos = response.interact_pointer_pos().map(to_norm);
+                if response.drag_started()
+                    && let Some(p) = pos
+                {
+                    self.annotations.begin(tool, &self.style, p);
+                }
+                if response.dragged()
+                    && let Some(p) = pos
+                {
+                    self.annotations.update(p);
+                }
+                if response.drag_stopped() {
+                    self.annotations.finish(page);
+                }
+            }
+        }
     }
 
     /// Content of the presenter window: current slide, next-page preview,
@@ -450,6 +613,7 @@ impl RumpressApp {
                     );
                 }
             });
+            self.draw_toolbar(ui);
             self.draw_current_slide(ui);
 
             if self.overview_visible {
@@ -543,28 +707,20 @@ impl RumpressApp {
         let avail = ui.available_size();
         let scale = (avail.x / tex_size.x).min(avail.y / tex_size.y);
         let size = tex_size * scale;
-        let sense = if self.highlight_mode {
-            egui::Sense::drag()
+        let sense = if self.tool.is_some() {
+            egui::Sense::click_and_drag()
         } else {
             egui::Sense::hover()
         };
         // Allocate the space so later widgets are laid out after the slide.
         let (rect, response) = ui.allocate_exact_size(size, sense);
         Image::from_texture(SizedTexture::new(tex.id(), tex_size)).paint_at(ui, rect);
-        highlight::draw(ui.painter(), rect, &self.strokes);
 
-        if !self.highlight_mode {
-            return;
+        if let Some(tool) = self.tool {
+            self.handle_slide_pointer(ui, tool, &response, rect);
         }
-        if let Some(pos) = response.interact_pointer_pos() {
-            let norm = egui::pos2(
-                ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0),
-                ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0),
-            );
-            self.strokes.push_point(norm, response.dragged());
-        } else {
-            self.strokes.push_point(egui::pos2(0.0, 0.0), false); // pen up
-        }
+        self.laser.prune(Instant::now());
+        self.draw_overlay(ui.painter(), rect);
     }
 
     /// Reads key events from `ctx` (whichever viewport is being drawn) into
@@ -622,6 +778,9 @@ fn draw_help(ctx: &Context) {
         });
 }
 
+/// How close (in slide-height units) the eraser must be to remove a shape.
+const ERASER_RADIUS: f32 = 0.03;
+
 /// The keybinding table shown by the help overlay: `(key, action)` pairs.
 const BINDINGS: &[(&str, &str)] = &[
     ("Right / Space / PageDown", "next page (overlay step)"),
@@ -631,7 +790,13 @@ const BINDINGS: &[(&str, &str)] = &[
     ("b", "blank / unblank the beamer"),
     ("g", "toggle overview grid"),
     ("0-9, Enter", "type a slide number, Enter = go to it"),
-    ("h", "toggle highlight pen"),
+    ("l", "laser pointer (tool on/off)"),
+    ("p / h / f", "pen / marker / filled area"),
+    ("n / a / r / o", "line / arrow / box / oval"),
+    ("e", "eraser"),
+    ("c / w", "next color / next width"),
+    ("u / Ctrl+Z", "undo last annotation"),
+    ("x", "clear annotations on this page"),
     ("t", "reset timer"),
     ("?", "toggle this help"),
     (
@@ -657,7 +822,7 @@ impl eframe::App for RumpressApp {
         // Highlight strokes belong to one page: clear them when the page
         // changes (including jumps via the overview grid).
         if self.state.current_page != self.last_page {
-            self.strokes.clear();
+            self.annotations.cancel();
             self.last_page = self.state.current_page;
         }
 
@@ -667,6 +832,11 @@ impl eframe::App for RumpressApp {
         }
         self.draw_presenter(ctx);
 
+        if self.laser.is_animating() {
+            // Keep the laser trail fading smoothly (otherwise we would only
+            // repaint every REPAINT_INTERVAL).
+            ctx.request_repaint();
+        }
         ctx.request_repaint_after(REPAINT_INTERVAL);
     }
 }
